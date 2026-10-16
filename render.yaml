@@ -1,0 +1,14 @@
+# Render Blueprint: one-click deployment (https://render.com/docs/blueprint-spec)
+services:
+  - type: web
+    name: shiftly
+    runtime: node
+    plan: free
+    buildCommand: npm install --include=dev && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production

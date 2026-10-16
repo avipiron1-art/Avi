@@ -19,6 +19,36 @@ npm start          # http://localhost:3000
 פיתוח עם טעינה חמה: `npm run dev` (שרת על פורט 3000 + Vite על http://localhost:5173).
 בדיקות אוטומטיות: `npm test`.
 
+## העלאה קבועה וחינמית ב-Google Cloud (גם מהטלפון)
+
+Google Cloud מציע שרת קטן (e2-micro) בחינם לתמיד, עם דיסק קבוע של 30GB – הנתונים נשמרים, והשרת לא נרדם.
+
+1. **פתיחת חשבון** – נכנסים ל-https://console.cloud.google.com עם חשבון Google, מאשרים את התנאים ומגדירים חשבון חיוב (נדרש כרטיס אשראי לאימות; בגבולות השכבה החינמית אין חיוב). למנויי Google AI Pro יש גם קרדיט חודשי ל-Google Cloud שאפשר להפעיל דרך https://developers.google.com/profile.
+2. **יצירת השרת** – בתפריט: Compute Engine ← VM instances ← Create instance:
+   - Region: ‏`us-central1`, ‏`us-west1` או `us-east1` (רק אזורים אלה חינמיים)
+   - Machine type: ‏**e2-micro**
+   - Boot disk: ‏**Debian 12**, סוג **Standard persistent disk**, גודל **30GB**
+   - Firewall: מסמנים **Allow HTTP traffic** ו-**Allow HTTPS traffic**
+   - לוחצים **Create**.
+3. **התקנה** – ליד השרת שנוצר לוחצים **SSH**. בחלון שנפתח מדביקים את הפקודה ולוחצים Enter:
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/avipiron1-art/Avi/main/deploy/gcp-setup.sh | sudo bash
+   ```
+   הסקריפט שואל אם להתחיל עם נתוני דמו, ואם לא – מבקש לבחור סיסמה למשתמש `admin`.
+4. בסיום מוצגת כתובת בסגנון `https://34-123-45-67.sslip.io` – זו כתובת המערכת (עם HTTPS). שומרים אותה במסך הבית בטלפון.
+
+**עדכון לגרסה חדשה:** מריצים שוב את אותה פקודה בחלון ה-SSH. הנתונים נשמרים.
+**גיבוי:** גיבוי יומי אוטומטי נשמר בשרת בתיקייה `/var/backups/shiftly` (14 ימים אחרונים).
+**שימו לב:** אם השרת נעצר ומופעל מחדש, כתובת ה-IP עשויה להשתנות – מריצים שוב את הפקודה כדי לקבל את הכתובת החדשה.
+
+## העלאה לאינטרנט (Render) – גם מהטלפון
+
+1. פותחים את https://render.com/deploy?repo=https://github.com/avipiron1-art/Avi ונרשמים עם חשבון GitHub.
+2. מאשרים ל-Render גישה לריפו, נותנים שם לשירות ולוחצים **Deploy Blueprint**. ההגדרות נקראות אוטומטית מהקובץ `render.yaml`.
+3. אחרי כמה דקות מתקבלת כתובת בסגנון `https://shiftly-xxxx.onrender.com` – נכנסים אליה עם משתמשי הדמו.
+
+> **מגבלות התוכנית החינמית:** השרת נרדם אחרי 15 דקות ללא שימוש (הכניסה הבאה לוקחת כחצי דקה), ובסיס הנתונים **מתאפס לנתוני הדמו** בכל הפעלה מחדש או עדכון. לשימוש אמיתי עם שמירת נתונים: משדרגים את השירות לתוכנית בתשלום, מוסיפים Disk (למשל ב-`/var/data`) ומגדירים משתנה סביבה `DB_FILE=/var/data/shiftly.db`.
+
 ### משתמשי דמו
 
 | תפקיד | שם משתמש | סיסמה |

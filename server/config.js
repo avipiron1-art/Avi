@@ -19,5 +19,6 @@ export const config = {
     maxFailedAttempts: 5,
     lockMinutes: 15,
   },
-  appUrl: process.env.APP_URL || 'http://localhost:3000',
+  // RENDER_EXTERNAL_URL is set automatically on Render
+  appUrl: process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:3000',
 };
