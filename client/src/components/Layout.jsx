@@ -1,0 +1,158 @@
+import { useEffect, useRef, useState } from 'react';
+import { NavLink, Outlet, useLocation, useNavigate, Link } from 'react-router';
+import {
+  LayoutDashboard, Users, CalendarDays, Clock, ListTodo, Inbox, BarChart3, Bell, Settings, Menu, Search, Moon, Sun,
+  LogOut, KeyRound, ChevronDown, CalendarClock, X,
+} from 'lucide-react';
+import { useAuth } from '../lib/auth.jsx';
+import { useTheme } from '../lib/theme.js';
+import { api } from '../lib/api.js';
+import { Avatar, IconButton } from './ui.jsx';
+import GlobalSearch from './GlobalSearch.jsx';
+import NotificationBell from './NotificationBell.jsx';
+
+/** Navigation items; `perm` = any of these permissions, `employee` = needs an employee card. */
+export const NAV = [
+  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true, mobile: true },
+  { to: '/employees', label: 'עובדים', icon: Users, perm: ['employees.view'] },
+  { to: '/shifts', label: 'משמרות', icon: CalendarDays, mobile: true },
+  { to: '/attendance', label: 'נוכחות', icon: Clock, mobile: true },
+  { to: '/tasks', label: 'משימות', icon: ListTodo, mobile: true },
+  { to: '/requests', label: 'בקשות', icon: Inbox, badge: 'requests' },
+  { to: '/availability', label: 'הזמינות שלי', icon: CalendarClock, employee: true },
+  { to: '/reports', label: 'דוחות', icon: BarChart3, perm: ['reports.view'] },
+  { to: '/notifications', label: 'התראות', icon: Bell, badge: 'notifications' },
+  { to: '/settings', label: 'הגדרות', icon: Settings },
+];
+
+export default function Layout() {
+  const { user, meta, logout, can } = useAuth();
+  const [theme, toggleTheme] = useTheme();
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [userMenu, setUserMenu] = useState(false);
+  const [unread, setUnread] = useState(0);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const userMenuRef = useRef(null);
+
+  const items = NAV.filter((n) => (!n.perm || can(...n.perm)) && (!n.employee || user.employee_id));
+
+  useEffect(() => { setMenuOpen(false); setUserMenu(false); }, [location.pathname]);
+
+  // Poll unread notifications
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.get('/notifications/unread-count').then((r) => alive && setUnread(r.unread)).catch(() => {});
+    load();
+    const t = setInterval(load, 30000);
+    window.addEventListener('notifications:changed', load);
+    return () => { alive = false; clearInterval(t); window.removeEventListener('notifications:changed', load); };
+  }, []);
+
+  // Ctrl/Cmd + K opens global search
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') { e.preventDefault(); setSearchOpen(true); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  useEffect(() => {
+    if (!userMenu) return undefined;
+    const close = (e) => { if (!userMenuRef.current?.contains(e.target)) setUserMenu(false); };
+    document.addEventListener('mousedown', close);
+    return () => document.removeEventListener('mousedown', close);
+  }, [userMenu]);
+
+  const onLogout = async () => { await logout(); navigate('/login'); };
+
+  return (
+    <div className="app">
+      <aside className={`sidebar ${menuOpen ? 'open' : ''}`} aria-label="תפריט ראשי">
+        <div className="sidebar-brand">
+          <div className="brand-logo"><CalendarDays size={20} /></div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="brand-name">Shiftly</div>
+            <div className="brand-sub" title={meta?.settings?.business_name}>{meta?.settings?.business_name || 'ניהול כוח אדם'}</div>
+          </div>
+          {menuOpen && <IconButton icon={X} label="סגירת תפריט" onClick={() => setMenuOpen(false)} small />}
+        </div>
+        <nav className="nav">
+          {items.map((n) => (
+            <NavLink key={n.to} to={n.to} end={n.end}>
+              <n.icon size={19} />
+              <span>{n.label}</span>
+              {n.badge === 'notifications' && unread > 0 && <span className="badge tone-danger nav-badge">{unread}</span>}
+            </NavLink>
+          ))}
+        </nav>
+        <div className="sidebar-footer">
+          <div className="person" style={{ padding: 6 }}>
+            <Avatar name={user.display_name} size={34} />
+            <div style={{ minWidth: 0, flex: 1 }}>
+              <div className="person-name">{user.display_name}</div>
+              <div className="person-sub">{user.role_name}</div>
+            </div>
+            <IconButton icon={LogOut} label="התנתקות" onClick={onLogout} small />
+          </div>
+        </div>
+      </aside>
+      {menuOpen && <div className="backdrop" onClick={() => setMenuOpen(false)} />}
+
+      <div className="main">
+        <header className="topbar">
+          <IconButton icon={Menu} label="פתיחת תפריט" className="menu-btn" onClick={() => setMenuOpen(true)} />
+          <button type="button" className="search-trigger" onClick={() => setSearchOpen(true)} aria-label="חיפוש">
+            <Search size={17} />
+            <span>חיפוש עובדים, משמרות, משימות...</span>
+            <kbd>Ctrl K</kbd>
+          </button>
+          <div className="topbar-actions">
+            <IconButton icon={theme === 'dark' ? Sun : Moon} label={theme === 'dark' ? 'מצב בהיר' : 'מצב כהה'} onClick={toggleTheme} />
+            <NotificationBell unread={unread} setUnread={setUnread} />
+            <div style={{ position: 'relative' }} ref={userMenuRef}>
+              <button type="button" className="btn btn-ghost" style={{ paddingInline: 6 }} onClick={() => setUserMenu((v) => !v)} aria-haspopup="menu" aria-expanded={userMenu}>
+                <Avatar name={user.display_name} size={30} />
+                <span className="hide-sm">{user.display_name.split(' ')[0]}</span>
+                <ChevronDown size={15} className="hide-sm" />
+              </button>
+              {userMenu && (
+                <div className="popover" role="menu">
+                  <div style={{ padding: '12px 14px', borderBottom: '1px solid var(--border)' }}>
+                    <div style={{ fontWeight: 700 }}>{user.display_name}</div>
+                    <div className="subtle">{user.email} · {user.role_name}</div>
+                  </div>
+                  {user.employee_id && <Link className="menu-item" to={`/employees/${user.employee_id}`}><Users size={16} />הכרטיס שלי</Link>}
+                  <Link className="menu-item" to="/settings?tab=profile"><KeyRound size={16} />שינוי סיסמה</Link>
+                  <button type="button" className="menu-item" onClick={toggleTheme}>{theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}{theme === 'dark' ? 'מצב בהיר' : 'מצב כהה'}</button>
+                  <button type="button" className="menu-item" style={{ color: 'var(--danger)' }} onClick={onLogout}><LogOut size={16} />התנתקות</button>
+                </div>
+              )}
+            </div>
+          </div>
+        </header>
+        <main className="content">
+          <Outlet />
+        </main>
+      </div>
+
+      <nav className="bottom-nav" aria-label="ניווט מהיר">
+        {items.filter((n) => n.mobile).map((n) => (
+          <NavLink key={n.to} to={n.to} end={n.end}>
+            <n.icon size={21} />
+            <span>{n.label === 'Dashboard' ? 'ראשי' : n.label}</span>
+          </NavLink>
+        ))}
+        <a href="#menu" onClick={(e) => { e.preventDefault(); setMenuOpen(true); }}>
+          <Menu size={21} />
+          <span>עוד</span>
+          {unread > 0 && <span className="dot-badge" style={{ top: 0, insetInlineEnd: 18 }}>{unread}</span>}
+        </a>
+      </nav>
+
+      <GlobalSearch open={searchOpen} onClose={() => setSearchOpen(false)} />
+    </div>
+  );
+}

@@ -1,0 +1,42 @@
+{
+  "name": "shiftly-workforce",
+  "version": "1.0.0",
+  "private": true,
+  "description": "מערכת לניהול עובדים, משמרות, נוכחות ומשימות",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n server,client -c blue,green \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "node --watch server/index.js",
+    "dev:client": "vite",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "seed": "node server/db/seed.js",
+    "test": "NODE_ENV=test node --test server/tests/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "better-sqlite3": "^11.7.0",
+    "cookie-parser": "^1.4.7",
+    "exceljs": "^4.4.0",
+    "express": "^4.22.3",
+    "express-rate-limit": "^7.4.1",
+    "helmet": "^8.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0",
+    "concurrently": "^9.1.0",
+    "lucide-react": "^0.460.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router": "^7.18.4",
+    "recharts": "^2.13.3",
+    "vite": "^6.4.4"
+  },
+  "overrides": {
+    "uuid": "^11.1.1"
+  }
+}
