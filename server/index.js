@@ -46,6 +46,7 @@ export function createApp() {
 
   const api = express.Router();
   api.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
+  api.get('/health', (req, res) => res.json({ ok: true }));
   api.use('/auth', authRoutes); // login / forgot / reset are rate-limited and need no CSRF token
   api.use(requireAuth, csrf);
   api.use('/dashboard', dashboardRoutes);
