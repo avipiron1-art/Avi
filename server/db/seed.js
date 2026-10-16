@@ -18,7 +18,11 @@ function mulberry32(a) {
 
 export const DEMO_PASSWORDS = { admin: 'Admin1234', manager: 'Manager1234', employee: 'Employee1234' };
 
-export function seed(db = getDb()) {
+/**
+ * Populate a fresh database.
+ * demo=false creates only roles, permissions, settings and a single admin (for real use).
+ */
+export function seed(db = getDb(), { demo = true, adminPassword = DEMO_PASSWORDS.admin } = {}) {
   const rnd = mulberry32(20261016);
   const pick = (arr) => arr[Math.floor(rnd() * arr.length)];
   const between = (a, b) => a + Math.floor(rnd() * (b - a + 1));
@@ -39,6 +43,12 @@ export function seed(db = getDb()) {
     for (const r of roles) roleId[r[0]] = insRole.run(...r).lastInsertRowid;
     const insPerm = db.prepare('INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)');
     for (const [role, perms] of Object.entries(DEFAULT_ROLE_PERMISSIONS)) for (const p of perms) insPerm.run(roleId[role], p);
+
+    if (!demo) {
+      db.prepare('INSERT INTO users (username, email, display_name, password_hash, role_id) VALUES (?, ?, ?, ?, ?)')
+        .run('admin', 'admin@shiftly.local', 'מנהל ראשי', bcrypt.hashSync(adminPassword, 12), roleId.admin);
+      return;
+    }
 
     // ---------- reference data ----------
     const insLoc = db.prepare('INSERT INTO locations (name, address) VALUES (?, ?)');
@@ -285,10 +295,12 @@ export function seed(db = getDb()) {
 
 export function seedIfEmpty(db = getDb()) {
   const has = db.prepare('SELECT COUNT(*) c FROM roles').get().c;
-  if (!has) {
-    seed(db);
-    console.log('🌱 Demo data created');
-  }
+  if (has) return;
+  // SEED_DEMO=false starts with an empty business; ADMIN_PASSWORD sets the admin's password
+  const demo = process.env.SEED_DEMO !== 'false';
+  const adminPassword = process.env.ADMIN_PASSWORD || DEMO_PASSWORDS.admin;
+  seed(db, { demo, adminPassword });
+  console.log(demo ? '🌱 Demo data created' : '🌱 Empty database created (user: admin)');
 }
 
 // `npm run seed` — wipe and recreate the demo database

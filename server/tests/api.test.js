@@ -245,3 +245,17 @@ test('password reset flow (demo mode returns link)', async () => {
   const reuse = await fetch(`${base}/auth/reset`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token, password: 'Another123' }) });
   assert.equal(reuse.status, 400);
 });
+
+test('empty install creates only roles, permissions and an admin with the chosen password', async () => {
+  const bcrypt = (await import('bcryptjs')).default;
+  const db = openDb(':memory:');
+  seed(db, { demo: false, adminPassword: 'Chosen123' });
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM employees').get().c, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM shifts').get().c, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM roles').get().c, 3);
+  const admin = db.prepare("SELECT u.password_hash, r.key FROM users u JOIN roles r ON r.id = u.role_id").all();
+  assert.equal(admin.length, 1);
+  assert.equal(admin[0].key, 'admin');
+  assert.ok(bcrypt.compareSync('Chosen123', admin[0].password_hash));
+  db.close();
+});
