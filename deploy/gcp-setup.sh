@@ -34,12 +34,14 @@ fi
 # ---------- packages ----------
 say "Installing system packages"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq ca-certificates curl git sqlite3 caddy >/dev/null
+# A fresh VM runs automatic updates for a few minutes after boot; wait for them instead of failing
+APT=(apt-get -o DPkg::Lock::Timeout=900)
+"${APT[@]}" update -qq
+"${APT[@]}" install -y -qq ca-certificates curl git sqlite3 caddy >/dev/null
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 20 ]; then
   say "Installing Node.js 22"
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
-  apt-get install -y -qq nodejs >/dev/null
+  "${APT[@]}" install -y -qq nodejs >/dev/null
 fi
 
 # ---------- app user & code ----------
