@@ -74,8 +74,9 @@ export default function Login() {
         </Field>
         <Field label="סיסמה" htmlFor="password">
           <div style={{ position: 'relative' }}>
-            <Input id="password" type={show ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} dir="ltr" style={{ textAlign: 'right', paddingInlineStart: 42 }} />
-            <button type="button" className="icon-btn sm" style={{ position: 'absolute', insetInlineStart: 5, top: 5 }} onClick={() => setShow((v) => !v)} aria-label={show ? 'הסתרת סיסמה' : 'הצגת סיסמה'}>
+            <Input id="password" type={show ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} dir="ltr" style={{ textAlign: 'right', paddingLeft: 46 }} />
+            {/* the eye sits on the left; the LTR input reserves that side with physical padding-left */}
+            <button type="button" className="icon-btn sm" style={{ position: 'absolute', left: 5, top: 5 }} onClick={() => setShow((v) => !v)} aria-label={show ? 'הסתרת סיסמה' : 'הצגת סיסמה'}>
               {show ? <EyeOff size={16} /> : <Eye size={16} />}
             </button>
           </div>

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate, Link } from 'react-router';
 import {
   LayoutDashboard, Users, CalendarDays, Clock, ListTodo, Inbox, BarChart3, Bell, Settings, Menu, Search, Moon, Sun,
-  LogOut, KeyRound, ChevronDown, CalendarClock, X,
+  LogOut, KeyRound, ChevronDown, CalendarCheck, X,
 } from 'lucide-react';
 import { useAuth } from '../lib/auth.jsx';
 import { useTheme } from '../lib/theme.js';
@@ -15,11 +15,11 @@ import NotificationBell from './NotificationBell.jsx';
 export const NAV = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true, mobile: true },
   { to: '/employees', label: 'עובדים', icon: Users, perm: ['employees.view'] },
+  { to: '/schedule', label: 'סידור עבודה', icon: CalendarCheck, mobile: true, short: 'סידור' },
   { to: '/shifts', label: 'משמרות', icon: CalendarDays, mobile: true },
   { to: '/attendance', label: 'נוכחות', icon: Clock, mobile: true },
-  { to: '/tasks', label: 'משימות', icon: ListTodo, mobile: true },
+  { to: '/tasks', label: 'משימות', icon: ListTodo },
   { to: '/requests', label: 'בקשות', icon: Inbox, badge: 'requests' },
-  { to: '/availability', label: 'הזמינות שלי', icon: CalendarClock, employee: true },
   { to: '/reports', label: 'דוחות', icon: BarChart3, perm: ['reports.view'] },
   { to: '/notifications', label: 'התראות', icon: Bell, badge: 'notifications' },
   { to: '/settings', label: 'הגדרות', icon: Settings },
@@ -142,7 +142,7 @@ export default function Layout() {
         {items.filter((n) => n.mobile).map((n) => (
           <NavLink key={n.to} to={n.to} end={n.end}>
             <n.icon size={21} />
-            <span>{n.label === 'Dashboard' ? 'ראשי' : n.label}</span>
+            <span>{n.label === 'Dashboard' ? 'ראשי' : n.short || n.label}</span>
           </NavLink>
         ))}
         <a href="#menu" onClick={(e) => { e.preventDefault(); setMenuOpen(true); }}>

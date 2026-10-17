@@ -1,0 +1,245 @@
+-- =====================================================================
+-- Shiftly – workforce management schema (SQLite)
+-- Times are stored as local business time ISO strings: 'YYYY-MM-DDTHH:MM'
+-- (timezone configured in settings). Dates: 'YYYY-MM-DD'.
+-- =====================================================================
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS roles (
+  id          INTEGER PRIMARY KEY,
+  key         TEXT NOT NULL UNIQUE CHECK (key IN ('admin','shift_manager','employee')),
+  name        TEXT NOT NULL,
+  description TEXT
+);
+
+-- Permissions granted to each role (admin implicitly has all permissions)
+CREATE TABLE IF NOT EXISTS role_permissions (
+  role_id    INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+  permission TEXT NOT NULL,
+  PRIMARY KEY (role_id, permission)
+);
+
+-- Branches / sites. Ready for multi-branch support.
+CREATE TABLE IF NOT EXISTS locations (
+  id         INTEGER PRIMARY KEY,
+  name       TEXT NOT NULL UNIQUE CHECK (length(name) BETWEEN 1 AND 80),
+  address    TEXT,
+  is_active  INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS departments (
+  id          INTEGER PRIMARY KEY,
+  name        TEXT NOT NULL UNIQUE CHECK (length(name) BETWEEN 1 AND 80),
+  description TEXT,
+  color       TEXT NOT NULL DEFAULT '#6366f1',
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Job positions ("תפקיד")
+CREATE TABLE IF NOT EXISTS positions (
+  id            INTEGER PRIMARY KEY,
+  name          TEXT NOT NULL UNIQUE CHECK (length(name) BETWEEN 1 AND 80),
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS employees (
+  id            INTEGER PRIMARY KEY,
+  employee_code TEXT NOT NULL UNIQUE CHECK (length(employee_code) BETWEEN 1 AND 20),
+  first_name    TEXT NOT NULL CHECK (length(first_name) BETWEEN 1 AND 60),
+  last_name     TEXT NOT NULL CHECK (length(last_name) BETWEEN 1 AND 60),
+  phone         TEXT,
+  email         TEXT UNIQUE COLLATE NOCASE,
+  avatar        TEXT,                       -- data:image/... (validated) or NULL -> initials
+  position_id   INTEGER REFERENCES positions(id) ON DELETE SET NULL,
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+  location_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+  start_date    TEXT NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','inactive','vacation')),
+  hourly_wage   REAL CHECK (hourly_wage IS NULL OR hourly_wage >= 0),
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_employees_department ON employees(department_id);
+CREATE INDEX IF NOT EXISTS idx_employees_position   ON employees(position_id);
+CREATE INDEX IF NOT EXISTS idx_employees_status     ON employees(status);
+
+CREATE TABLE IF NOT EXISTS users (
+  id              INTEGER PRIMARY KEY,
+  username        TEXT NOT NULL UNIQUE COLLATE NOCASE CHECK (length(username) BETWEEN 3 AND 40),
+  email           TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  display_name    TEXT NOT NULL,
+  password_hash   TEXT NOT NULL,
+  role_id         INTEGER NOT NULL REFERENCES roles(id),
+  employee_id     INTEGER UNIQUE REFERENCES employees(id) ON DELETE CASCADE,
+  is_active       INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+  failed_attempts INTEGER NOT NULL DEFAULT 0,
+  locked_until    TEXT,
+  last_login_at   TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role_id);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  id          INTEGER PRIMARY KEY,
+  token_hash  TEXT NOT NULL UNIQUE,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  remember    INTEGER NOT NULL DEFAULT 0,
+  expires_at  TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL DEFAULT (datetime('now')),
+  ip          TEXT,
+  user_agent  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
+
+CREATE TABLE IF NOT EXISTS password_resets (
+  id         INTEGER PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token_hash TEXT NOT NULL UNIQUE,
+  expires_at TEXT NOT NULL,
+  used_at    TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS employee_notes (
+  id          INTEGER PRIMARY KEY,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  author_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  content     TEXT NOT NULL CHECK (length(content) BETWEEN 1 AND 2000),
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_notes_employee ON employee_notes(employee_id);
+
+CREATE TABLE IF NOT EXISTS shifts (
+  id          INTEGER PRIMARY KEY,
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  start_at    TEXT NOT NULL,                -- 'YYYY-MM-DDTHH:MM'
+  end_at      TEXT NOT NULL,
+  position_id INTEGER REFERENCES positions(id) ON DELETE SET NULL,  -- role within the shift
+  location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+  note        TEXT,
+  status      TEXT NOT NULL DEFAULT 'scheduled' CHECK (status IN ('scheduled','cancelled')),
+  late_notified INTEGER NOT NULL DEFAULT 0,
+  created_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (end_at > start_at)
+);
+CREATE INDEX IF NOT EXISTS idx_shifts_employee_start ON shifts(employee_id, start_at);
+CREATE INDEX IF NOT EXISTS idx_shifts_start ON shifts(start_at);
+
+-- Actual attendance. Planned times are read from the linked shift (no duplication).
+CREATE TABLE IF NOT EXISTS attendance (
+  id            INTEGER PRIMARY KEY,
+  shift_id      INTEGER NOT NULL UNIQUE REFERENCES shifts(id) ON DELETE CASCADE,
+  clock_in_at   TEXT,
+  clock_out_at  TEXT,
+  marked_absent INTEGER NOT NULL DEFAULT 0 CHECK (marked_absent IN (0,1)),
+  note          TEXT,
+  updated_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (clock_out_at IS NULL OR clock_in_at IS NULL OR clock_out_at >= clock_in_at)
+);
+
+CREATE TABLE IF NOT EXISTS incidents (
+  id          INTEGER PRIMARY KEY,
+  shift_id    INTEGER REFERENCES shifts(id) ON DELETE SET NULL,
+  reported_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  title       TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 120),
+  description TEXT,
+  severity    TEXT NOT NULL DEFAULT 'medium' CHECK (severity IN ('low','medium','high')),
+  occurred_at TEXT NOT NULL,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_occurred ON incidents(occurred_at);
+
+CREATE TABLE IF NOT EXISTS tasks (
+  id          INTEGER PRIMARY KEY,
+  title       TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 150),
+  description TEXT,
+  assignee_id INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  created_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  due_date    TEXT,
+  priority    TEXT NOT NULL DEFAULT 'normal' CHECK (priority IN ('low','normal','high','urgent')),
+  status      TEXT NOT NULL DEFAULT 'new' CHECK (status IN ('new','in_progress','done','cancelled')),
+  due_notified INTEGER NOT NULL DEFAULT 0,
+  completed_at TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_status   ON tasks(status);
+
+CREATE TABLE IF NOT EXISTS requests (
+  id               INTEGER PRIMARY KEY,
+  employee_id      INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  type             TEXT NOT NULL CHECK (type IN ('vacation','day_off','shift_swap','availability','general')),
+  start_date       TEXT NOT NULL,
+  end_date         TEXT,
+  shift_id         INTEGER REFERENCES shifts(id) ON DELETE SET NULL,     -- for shift swap
+  swap_with_id     INTEGER REFERENCES employees(id) ON DELETE SET NULL,  -- for shift swap
+  details          TEXT NOT NULL CHECK (length(details) BETWEEN 1 AND 2000),
+  status           TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+  manager_response TEXT,
+  reviewed_by      INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at      TEXT,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  CHECK (end_date IS NULL OR end_date >= start_date)
+);
+CREATE INDEX IF NOT EXISTS idx_requests_employee ON requests(employee_id);
+CREATE INDEX IF NOT EXISTS idx_requests_status   ON requests(status);
+
+-- Weekly availability reported by the employee
+CREATE TABLE IF NOT EXISTS availability (
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  weekday     INTEGER NOT NULL CHECK (weekday BETWEEN 0 AND 6),  -- 0 = Sunday
+  available   INTEGER NOT NULL DEFAULT 1 CHECK (available IN (0,1)),
+  from_time   TEXT,
+  to_time     TEXT,
+  note        TEXT,
+  updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (employee_id, weekday)
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id         INTEGER PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type       TEXT NOT NULL,
+  title      TEXT NOT NULL,
+  body       TEXT,
+  link       TEXT,
+  is_read    INTEGER NOT NULL DEFAULT 0 CHECK (is_read IN (0,1)),
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id, is_read, created_at);
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id          INTEGER PRIMARY KEY,
+  user_id     INTEGER,             -- intentionally no FK: the log must outlive deleted users
+  user_name   TEXT,                -- snapshot: keeps history readable after user deletion
+  action      TEXT NOT NULL,       -- e.g. shift.update
+  entity_type TEXT,
+  entity_id   INTEGER,
+  description TEXT NOT NULL,
+  old_value   TEXT,                -- JSON
+  new_value   TEXT,                -- JSON
+  ip          TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_audit_entity  ON audit_logs(entity_type, entity_id);
+
+-- Audit log is append-only: enforced at the database level.
+CREATE TRIGGER IF NOT EXISTS audit_logs_no_update BEFORE UPDATE ON audit_logs
+BEGIN SELECT RAISE(ABORT, 'audit log is immutable'); END;
+CREATE TRIGGER IF NOT EXISTS audit_logs_no_delete BEFORE DELETE ON audit_logs
+BEGIN SELECT RAISE(ABORT, 'audit log is immutable'); END;
+
+CREATE TABLE IF NOT EXISTS settings (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);

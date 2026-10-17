@@ -3,7 +3,7 @@ import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import { getDb } from '../db/index.js';
 import { config } from '../config.js';
-import { ah, badRequest, unauthorized } from '../lib/errors.js';
+import { ah, badRequest, forbidden, unauthorized } from '../lib/errors.js';
 import { validate, z, zPassword } from '../lib/validate.js';
 import { startSession, endSession, requireAuth, hashToken, newToken, csrf } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
@@ -136,6 +136,33 @@ router.post('/reset', resetLimiter, ah(async (req, res) => {
     action: 'auth.password_reset', entityType: 'user', entityId: row.user_id, description: `${row.display_name} איפס/ה סיסמה`,
   });
   res.json({ ok: true });
+}));
+
+// Edit own account details (main admin). The role title stays separate from the person's name.
+router.put('/profile', requireAuth, csrf, ah(async (req, res) => {
+  if (!req.can('users.manage')) throw forbidden('רק מנהל ראשי יכול לשנות את פרטי החשבון. פנו למנהל המערכת.');
+  const body = validate(z.object({
+    display_name: z.string().trim().min(1, 'שדה חובה').max(80),
+    username: z.string().trim().min(3, 'לפחות 3 תווים').max(40).regex(/^[A-Za-z0-9._-]+$/, 'אותיות באנגלית, ספרות ו-._- בלבד'),
+    email: z.string().trim().toLowerCase().email('כתובת אימייל לא תקינה').max(120),
+    current_password: z.string().optional().default(''),
+  }), req.body);
+  const db = getDb();
+  const me = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  const loginChanged = body.username.toLowerCase() !== me.username.toLowerCase() || body.email !== me.email.toLowerCase();
+  if (loginChanged && !(await bcrypt.compare(body.current_password, me.password_hash))) {
+    throw badRequest('כדי לשנות שם משתמש או אימייל יש להזין את הסיסמה הנוכחית', { fields: { current_password: 'הסיסמה הנוכחית שגויה' } });
+  }
+  if (db.prepare('SELECT 1 FROM users WHERE username = ? AND id != ?').get(body.username, me.id)) throw badRequest('שם המשתמש תפוס', { fields: { username: 'שם המשתמש תפוס' } });
+  if (db.prepare('SELECT 1 FROM users WHERE email = ? AND id != ?').get(body.email, me.id)) throw badRequest('האימייל כבר בשימוש', { fields: { email: 'האימייל כבר בשימוש' } });
+  db.prepare("UPDATE users SET display_name = ?, username = ?, email = ?, updated_at = datetime('now') WHERE id = ?")
+    .run(body.display_name, body.username, body.email, me.id);
+  audit(req, {
+    action: 'user.profile', entityType: 'user', entityId: me.id, description: `${body.display_name} עדכן/ה את פרטי החשבון שלו/ה`,
+    oldValue: { display_name: me.display_name, username: me.username, email: me.email },
+    newValue: { display_name: body.display_name, username: body.username, email: body.email },
+  });
+  res.json({ ok: true, message: 'פרטי החשבון נשמרו' });
 }));
 
 router.post('/change-password', requireAuth, csrf, ah(async (req, res) => {

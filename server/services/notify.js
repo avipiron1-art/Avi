@@ -1,4 +1,5 @@
 import { getDb } from '../db/index.js';
+import { permissionsForUser } from './permissions.js';
 
 const ins = () =>
   getDb().prepare('INSERT INTO notifications (user_id, type, title, body, link) VALUES (?, ?, ?, ?, ?)');
@@ -15,16 +16,14 @@ export function notifyEmployee(employeeId, payload) {
   if (u) notifyUser(u.id, payload);
 }
 
-/** Notify every active user that holds a given permission (admins always included). */
+/** Notify every active user that holds a given permission (role or personal grant). */
 export function notifyPermission(permission, payload, { exceptUserId = null } = {}) {
-  const db = getDb();
-  const users = db
-    .prepare(
-      `SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id
-       WHERE u.is_active = 1 AND (r.key = 'admin' OR EXISTS (
-         SELECT 1 FROM role_permissions rp WHERE rp.role_id = r.id AND rp.permission = ?))`,
-    )
-    .all(permission);
+  const users = getDb()
+    .prepare('SELECT u.id, r.key AS role FROM users u JOIN roles r ON r.id = u.role_id WHERE u.is_active = 1')
+    .all();
   const stmt = ins();
-  for (const u of users) if (u.id !== exceptUserId) stmt.run(u.id, payload.type, payload.title, payload.body ?? null, payload.link ?? null);
+  for (const u of users) {
+    if (u.id === exceptUserId || !permissionsForUser(u.id, u.role).has(permission)) continue;
+    stmt.run(u.id, payload.type, payload.title, payload.body ?? null, payload.link ?? null);
+  }
 }

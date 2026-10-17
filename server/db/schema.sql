@@ -243,3 +243,63 @@ CREATE TABLE IF NOT EXISTS settings (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- =====================================================================
+-- Preference-based scheduling
+-- =====================================================================
+
+-- Shift templates defined by an authorized manager (e.g. Morning 07:00–15:00)
+CREATE TABLE IF NOT EXISTS shift_types (
+  id          INTEGER PRIMARY KEY,
+  name        TEXT NOT NULL CHECK (length(name) BETWEEN 1 AND 40),
+  start_time  TEXT NOT NULL,          -- 'HH:MM'
+  end_time    TEXT NOT NULL,          -- 'HH:MM' (<= start_time means it ends the next day)
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  is_active   INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0,1)),
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- An employee's submission for a week (who submitted, general note)
+CREATE TABLE IF NOT EXISTS schedule_submissions (
+  employee_id  INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  week_start   TEXT NOT NULL,         -- Sunday 'YYYY-MM-DD'
+  note         TEXT,
+  submitted_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (employee_id, week_start)
+);
+
+-- Per day + shift type preference
+CREATE TABLE IF NOT EXISTS shift_preferences (
+  employee_id   INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  date          TEXT NOT NULL,
+  shift_type_id INTEGER NOT NULL REFERENCES shift_types(id) ON DELETE CASCADE,
+  preference    TEXT NOT NULL CHECK (preference IN ('preferred','available','unavailable')),
+  PRIMARY KEY (employee_id, date, shift_type_id)
+);
+CREATE INDEX IF NOT EXISTS idx_prefs_date ON shift_preferences(date);
+
+-- Week planning state
+CREATE TABLE IF NOT EXISTS schedule_weeks (
+  week_start   TEXT PRIMARY KEY,
+  status       TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  published_at TEXT,
+  published_by INTEGER REFERENCES users(id) ON DELETE SET NULL
+);
+
+-- Draft assignments made on the scheduling board (become shifts when published)
+CREATE TABLE IF NOT EXISTS schedule_assignments (
+  date          TEXT NOT NULL,
+  shift_type_id INTEGER NOT NULL REFERENCES shift_types(id) ON DELETE CASCADE,
+  employee_id   INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  is_lead       INTEGER NOT NULL DEFAULT 0 CHECK (is_lead IN (0,1)),   -- אחמ"ש
+  PRIMARY KEY (date, shift_type_id, employee_id)
+);
+
+-- Per-user permission overrides on top of the role's permissions
+CREATE TABLE IF NOT EXISTS user_permissions (
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  permission TEXT NOT NULL,
+  granted    INTEGER NOT NULL CHECK (granted IN (0,1)),  -- 1 = grant, 0 = revoke
+  PRIMARY KEY (user_id, permission)
+);

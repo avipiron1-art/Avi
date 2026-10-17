@@ -259,3 +259,162 @@ test('empty install creates only roles, permissions and an admin with the chosen
   assert.ok(bcrypt.compareSync('Chosen123', admin[0].password_hash));
   db.close();
 });
+
+// ===================== preference-based scheduling =====================
+function nextSunday() {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + 7 - d.getUTCDay() + 14); // a Sunday ~3 weeks ahead (clear of demo data)
+  return d.toISOString().slice(0, 10);
+}
+
+test('scheduling requires schedule.manage; personal grant enables it for one shift manager only', async () => {
+  const michal = await login('michal', 'Manager1234');
+  assert.equal((await michal.get('/schedule/board')).status, 403);
+  const admin = await login('admin', 'Admin1234');
+  const users = (await admin.get('/users')).body.users;
+  const mUser = users.find((u) => u.username === 'michal');
+  const perms = (await admin.get(`/users/${mUser.id}/permissions`)).body;
+  assert.ok(!perms.effective.includes('schedule.manage'));
+  const r = await admin.put(`/users/${mUser.id}/permissions`, { permissions: [...perms.effective, 'schedule.manage'] });
+  assert.equal(r.status, 200);
+  assert.equal((await michal.get('/schedule/board')).status, 200, 'grant applies immediately');
+  const ori = await login('ori', 'Manager1234');
+  assert.equal((await ori.get('/schedule/board')).status, 403, 'other shift managers unaffected');
+  // personal revoke
+  const r2 = await admin.put(`/users/${mUser.id}/permissions`, { permissions: [...perms.effective.filter((p) => p !== 'tasks.manage'), 'schedule.manage'] });
+  assert.equal(r2.status, 200);
+  assert.equal((await michal.post('/tasks', { title: 'x' })).status, 403, 'revoked permission is enforced');
+  assert.equal((await ori.post('/tasks', { title: 'x' })).status, 201);
+  // admin cannot be restricted
+  const adminUser = users.find((u) => u.username === 'admin');
+  assert.equal((await admin.put(`/users/${adminUser.id}/permissions`, { permissions: [] })).status, 403);
+});
+
+test('employees submit preferences, manager assigns with a shift lead and publishes real shifts', async () => {
+  const ws = nextSunday();
+  const yossi = await login('yossi', 'Employee1234');
+  const noa = await login('noa', 'Employee1234');
+  const my = (await yossi.get(`/schedule/my?week=${ws}`)).body;
+  assert.equal(my.week_start, ws);
+  const [morning, evening] = my.types;
+  assert.ok(morning && evening);
+  const sub = await yossi.put('/schedule/my', { week_start: ws, note: 'לא בימי שישי', prefs: [
+    { date: ws, shift_type_id: morning.id, preference: 'preferred' },
+    { date: ws, shift_type_id: evening.id, preference: 'unavailable' },
+  ] });
+  assert.equal(sub.status, 200);
+  const bad = await yossi.put('/schedule/my', { week_start: ws, prefs: [{ date: '2000-01-01', shift_type_id: morning.id, preference: 'available' }] });
+  assert.equal(bad.status, 400);
+  await noa.put('/schedule/my', { week_start: ws, prefs: [{ date: ws, shift_type_id: morning.id, preference: 'available' }] });
+
+  const admin = await login('admin', 'Admin1234');
+  const board = (await admin.get(`/schedule/board?week=${ws}`)).body;
+  const yId = (await yossi.get('/auth/me')).body.user.employee_id;
+  const nId = (await noa.get('/auth/me')).body.user.employee_id;
+  assert.ok(board.prefs.some((p) => p.employee_id === yId && p.preference === 'preferred'));
+  assert.ok(board.employees.find((e) => e.id === yId).submitted_at);
+
+  const twoLeads = await admin.put('/schedule/board', { week_start: ws, assignments: [
+    { date: ws, shift_type_id: morning.id, employee_id: yId, is_lead: true },
+    { date: ws, shift_type_id: morning.id, employee_id: nId, is_lead: true },
+  ] });
+  assert.equal(twoLeads.status, 400);
+
+  const assignments = [
+    { date: ws, shift_type_id: morning.id, employee_id: yId, is_lead: true },
+    { date: ws, shift_type_id: morning.id, employee_id: nId, is_lead: false },
+  ];
+  const pub = await admin.post('/schedule/publish', { week_start: ws, assignments });
+  assert.equal(pub.status, 200);
+  assert.equal(pub.body.stats.created + pub.body.stats.updated, 2, "a matching manual shift is linked, not duplicated");
+  assert.equal(pub.body.state.status, 'published');
+
+  // employees can no longer change preferences for a published week
+  assert.equal((await yossi.put('/schedule/my', { week_start: ws, prefs: [] })).status, 400);
+
+  // everyone sees the published schedule with the shift lead
+  const view = (await yossi.get(`/schedule/published?week=${ws}`)).body;
+  const sunday = view.days[0].shifts.find((s) => s.name === morning.name);
+  const ours = sunday.workers.filter((w) => [yId, nId].includes(w.employee_id));
+  assert.equal(ours.length, 2);
+  assert.equal(ours.find((w) => w.is_lead).employee_id, yId);
+  assert.equal(ours.filter((w) => w.employee_id === yId).length, 1, 'no duplicate shift for the same person');
+  assert.equal(sunday.start_at, `${ws}T${morning.start_time}`);
+
+  // published shifts are real shifts (calendar + notifications)
+  const mine = (await yossi.get(`/shifts?from=${ws}&to=${ws}`)).body.shifts;
+  assert.ok(mine.some((s) => s.is_lead === 1 && s.shift_type_id === morning.id));
+  assert.ok((await yossi.get('/notifications')).body.notifications.some((n) => n.title.includes('פורסם')));
+
+  // re-publish without noa: her shift is cancelled, yossi's unchanged
+  const again = await admin.post('/schedule/publish', { week_start: ws, assignments: [assignments[0]] });
+  assert.equal(again.body.stats.cancelled, 1);
+  assert.equal(again.body.stats.created, 0);
+  assert.equal(again.body.stats.updated, 0);
+  const view2 = (await noa.get(`/schedule/published?week=${ws}`)).body;
+  const ours2 = view2.days[0].shifts.filter((x) => x.name === morning.name).flatMap((x) => x.workers).filter((w) => [yId, nId].includes(w.employee_id));
+  assert.deepEqual(ours2.map((w) => w.employee_id), [yId]);
+});
+
+test('employees cannot reach the scheduling board or edit shift types', async () => {
+  const emp = await login('yossi', 'Employee1234');
+  assert.equal((await emp.get('/schedule/board')).status, 403);
+  assert.equal((await emp.post('/schedule/publish', { week_start: nextSunday(), assignments: [] })).status, 403);
+  assert.equal((await emp.post('/schedule/shift-types', { name: 'לילה', start_time: '23:00', end_time: '07:00' })).status, 403);
+  const admin = await login('admin', 'Admin1234');
+  const t = await admin.post('/schedule/shift-types', { name: 'לילה', start_time: '23:00', end_time: '07:00', sort_order: 3 });
+  assert.equal(t.status, 201);
+});
+
+test('admin can change own name, username and email (password required for login changes)', async () => {
+  const admin = await login('admin', 'Admin1234');
+  const noPw = await admin.put('/auth/profile', { display_name: 'אבי כהן', username: 'avi', email: 'avi@example.com' });
+  assert.equal(noPw.status, 400);
+  const ok = await admin.put('/auth/profile', { display_name: 'אבי כהן', username: 'avi', email: 'avi@example.com', current_password: 'Admin1234' });
+  assert.equal(ok.status, 200);
+  const me = (await admin.get('/auth/me')).body.user;
+  assert.equal(me.display_name, 'אבי כהן');
+  assert.equal(me.role_name, 'מנהל ראשי');
+  await login('avi', 'Admin1234');
+  const emp = await login('yossi', 'Employee1234');
+  assert.equal((await emp.put('/auth/profile', { display_name: 'x', username: 'yossi', email: 'yossi@shiftly.demo' })).status, 403);
+  // restore for other tests
+  await admin.put('/auth/profile', { display_name: 'דנה שלום', username: 'admin', email: 'admin@shiftly.demo', current_password: 'Admin1234' });
+});
+
+test('databases created by the previous version are upgraded in place', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const Database = (await import('better-sqlite3')).default;
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'mig-')), 'old.db');
+  const old = new Database(file);
+  old.exec(fs.readFileSync(new URL('./fixtures/schema-v1.sql', import.meta.url), 'utf8')); // schema of the first release
+  old.exec(`INSERT INTO employees (employee_code, first_name, last_name, start_date) VALUES ('E1','a','b','2026-01-01');
+    INSERT INTO shifts (employee_id, start_at, end_at) VALUES (1, '2026-01-01T08:00', '2026-01-01T16:00');`);
+  old.close();
+  const db = openDb(file);
+  const cols = db.prepare('PRAGMA table_info(shifts)').all().map((c) => c.name);
+  assert.ok(cols.includes('shift_type_id') && cols.includes('is_lead'));
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM shifts').get().c, 1, 'existing data kept');
+  assert.ok(db.prepare('SELECT COUNT(*) c FROM shift_types').get().c >= 2, 'default shift types created');
+  db.close();
+  const again = openDb(file); // idempotent
+  again.close();
+});
+
+test('a delegated user manager cannot take over main-admin accounts', async () => {
+  const admin = await login('admin', 'Admin1234');
+  const users = (await admin.get('/users')).body.users;
+  const ori = users.find((u) => u.username === 'ori');
+  const adminUser = users.find((u) => u.username === 'admin');
+  const perms = (await admin.get(`/users/${ori.id}/permissions`)).body.effective;
+  await admin.put(`/users/${ori.id}/permissions`, { permissions: [...perms, 'users.manage'] });
+  const o = await login('ori', 'Manager1234');
+  assert.equal((await o.post(`/users/${adminUser.id}/password`, { password: 'Hacked1234' })).status, 403);
+  assert.equal((await o.put(`/users/${ori.id}`, { ...ori, role: 'admin', is_active: true, employee_id: ori.employee_id })).status, 403);
+  assert.equal((await o.del(`/users/${adminUser.id}`)).status, 403);
+  assert.equal((await o.put(`/users/${ori.id}/permissions`, { permissions: Object.keys({}) })).status, 403);
+  assert.equal((await o.get('/users')).status, 200, 'delegated permission still works for normal users');
+  await admin.put(`/users/${ori.id}/permissions`, { permissions: perms });
+});

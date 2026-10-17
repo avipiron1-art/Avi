@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
-  KeyRound, Building2, Network, UserCog, ShieldCheck, History, Plus, Pencil, Trash2, Save, Search, Lock, ChevronDown, ChevronUp, Moon, Sun,
+  KeyRound, Building2, Network, UserCog, ShieldCheck, History, Plus, Pencil, Trash2, Save, Search, Lock, ChevronDown, ChevronUp, Moon, Sun, RotateCcw,
 } from 'lucide-react';
 import { useApi, useDebounced } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
@@ -16,8 +16,6 @@ import { dateTime } from '../lib/format.js';
 // ---------------- profile ----------------
 function Profile() {
   const toast = useToast();
-  const { user } = useAuth();
-  const [theme, toggle] = useTheme();
   const [saving, setSaving] = useState(false);
   const { values: v, set, setValues, errors, setErrors } = useForm({ current_password: '', new_password: '', confirm: '' });
   const save = async () => {
@@ -39,16 +37,54 @@ function Profile() {
           <div><Button variant="primary" icon={Save} onClick={save} loading={saving}>עדכון סיסמה</Button></div>
         </div>
       </Card>
-      <Card title="החשבון שלי" icon={UserCog}>
+      <Account />
+    </div>
+  );
+}
+
+/** Own account details. The main admin can edit name / username / email; the role title stays separate. */
+function Account() {
+  const toast = useToast();
+  const { user, can, refresh } = useAuth();
+  const [theme, toggle] = useTheme();
+  const editable = can('users.manage');
+  const [saving, setSaving] = useState(false);
+  const { values: v, set, errors, setErrors } = useForm({ display_name: user.display_name, username: user.username, email: user.email, current_password: '' });
+  const loginChanged = v.username.trim().toLowerCase() !== user.username.toLowerCase() || v.email.trim().toLowerCase() !== user.email.toLowerCase();
+  const changed = loginChanged || v.display_name.trim() !== user.display_name;
+  const save = async () => {
+    setSaving(true);
+    try {
+      const r = await api.put('/auth/profile', v);
+      toast.success(r.message);
+      await refresh();
+    } catch (e) { setErrors(e.fields); toast.error(e); } finally { setSaving(false); }
+  };
+  return (
+    <Card title="החשבון שלי" icon={UserCog}>
+      {editable ? (
+        <div className="grid">
+          <Field label="השם שלך" error={errors.display_name} hint="השם שמוצג במערכת וביומן הפעולות"><Input value={v.display_name} onChange={set('display_name')} invalid={errors.display_name} /></Field>
+          <Field label="שם משתמש (לכניסה)" error={errors.username}><Input value={v.username} onChange={set('username')} invalid={errors.username} dir="ltr" autoComplete="username" /></Field>
+          <Field label="אימייל" error={errors.email}><Input type="email" value={v.email} onChange={set('email')} invalid={errors.email} dir="ltr" /></Field>
+          {loginChanged && (
+            <Field label="סיסמה נוכחית (לאישור השינוי)" error={errors.current_password}>
+              <Input type="password" value={v.current_password} onChange={set('current_password')} invalid={errors.current_password} dir="ltr" autoComplete="current-password" />
+            </Field>
+          )}
+          <div className="info-list"><div><div className="k">תפקיד</div><div className="v">{user.role_name}</div></div></div>
+          <div><Button variant="primary" icon={Save} onClick={save} loading={saving} disabled={!changed}>שמירת פרטים</Button></div>
+        </div>
+      ) : (
         <div className="info-list">
           <div><div className="k">שם</div><div className="v">{user.display_name}</div></div>
           <div><div className="k">שם משתמש</div><div className="v ltr">{user.username}</div></div>
           <div><div className="k">אימייל</div><div className="v ltr">{user.email}</div></div>
-          <div><div className="k">הרשאה</div><div className="v">{user.role_name}</div></div>
+          <div><div className="k">תפקיד</div><div className="v">{user.role_name}</div></div>
         </div>
-        <div className="mt"><Button icon={theme === 'dark' ? Sun : Moon} onClick={toggle}>{theme === 'dark' ? 'מעבר למצב בהיר' : 'מעבר למצב כהה'}</Button></div>
-      </Card>
-    </div>
+      )}
+      <div className="mt"><Button icon={theme === 'dark' ? Sun : Moon} onClick={toggle}>{theme === 'dark' ? 'מעבר למצב בהיר' : 'מעבר למצב כהה'}</Button></div>
+    </Card>
   );
 }
 
@@ -185,12 +221,59 @@ function UserForm({ user: u, onClose, onSaved }) {
   );
 }
 
+function UserPermissions({ user: u, onClose, onSaved }) {
+  const toast = useToast();
+  const { data, loading } = useApi(`/users/${u.id}/permissions`);
+  const [set, setSet] = useState(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => { if (data) setSet(new Set(data.effective)); }, [data]);
+  const role = new Set(data?.role_permissions || []);
+  const toggle = (p) => setSet((cur) => { const n = new Set(cur); if (n.has(p)) n.delete(p); else n.add(p); return n; });
+  const diffCount = set ? data.catalog.filter((p) => set.has(p.key) !== role.has(p.key)).length : 0;
+  const save = async () => {
+    setSaving(true);
+    try { const r = await api.put(`/users/${u.id}/permissions`, { permissions: [...set] }); toast.success(r.message); onSaved(); onClose(); } catch (e) { toast.error(e); } finally { setSaving(false); }
+  };
+  return (
+    <Modal open onClose={onClose} wide title={`הרשאות אישיות · ${u.display_name}`}
+      footer={data?.locked ? <Button onClick={onClose}>סגירה</Button> : (
+        <>
+          <Button variant="ghost" icon={RotateCcw} onClick={() => setSet(new Set(role))} disabled={!diffCount} style={{ marginInlineEnd: 'auto' }}>איפוס להרשאות התפקיד</Button>
+          <Button onClick={onClose}>ביטול</Button>
+          <Button variant="primary" onClick={save} loading={saving}>שמירה</Button>
+        </>
+      )}>
+      {loading || !set ? <SkeletonRows rows={6} /> : data.locked ? (
+        <p className="muted">למנהל ראשי יש תמיד גישה מלאה לכל המערכת.</p>
+      ) : (
+        <>
+          <p className="muted mb">ברירת המחדל היא ההרשאות של התפקיד <strong>{data.user.role_name}</strong>. כאן אפשר להוסיף או להסיר הרשאות רק למשתמש הזה, בלי לשנות את שאר המשתמשים באותו תפקיד.</p>
+          <div className="perm-list">
+            {data.catalog.map((p) => {
+              const on = set.has(p.key);
+              const custom = on !== role.has(p.key);
+              return (
+                <label key={p.key} className={`perm-item ${custom ? 'custom' : ''}`}>
+                  <input type="checkbox" checked={on} onChange={() => toggle(p.key)} />
+                  <span className="perm-item-label">{p.label}</span>
+                  {custom && <Badge tone={on ? 'success' : 'danger'}>{on ? 'נוספה אישית' : 'הוסרה אישית'}</Badge>}
+                </label>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function Users() {
   const toast = useToast();
   const { user: me } = useAuth();
   const { data, loading, error, reload } = useApi('/users');
   const [form, setForm] = useState(null);
   const [pw, setPw] = useState(null);
+  const [permsFor, setPermsFor] = useState(null);
   const [newPw, setNewPw] = useState('');
   const [pwErr, setPwErr] = useState('');
   const [confirm, confirmDialog] = useConfirm();
@@ -212,13 +295,19 @@ function Users() {
                 <tr key={u.id}>
                   <td><strong>{u.display_name}</strong><div className="subtle ltr">{u.email}</div></td>
                   <td className="hide-sm ltr">{u.username}</td>
-                  <td><Badge tone={u.role === 'admin' ? 'danger' : u.role === 'shift_manager' ? 'warning' : 'neutral'}>{u.role_name}</Badge></td>
+                  <td>
+                    <div className="flex flex-wrap" style={{ gap: 4 }}>
+                      <Badge tone={u.role === 'admin' ? 'danger' : u.role === 'shift_manager' ? 'warning' : 'neutral'}>{u.role_name}</Badge>
+                      {u.custom_permissions > 0 && <Badge tone="primary">+ הרשאות אישיות</Badge>}
+                    </div>
+                  </td>
                   <td className="hide-sm">{u.employee_name || '—'}</td>
                   <td className="hide-sm subtle">{u.last_login_at ? dateTime(u.last_login_at) : 'אף פעם'}</td>
                   <td>{u.is_active ? <Badge tone="success" dot>פעיל</Badge> : <Badge dot>מושבת</Badge>}</td>
                   <td>
                     <div className="row-actions">
                       <IconButton icon={Pencil} label="עריכה" small onClick={() => setForm(u)} />
+                      {u.role !== 'admin' && <IconButton icon={ShieldCheck} label="הרשאות אישיות" small onClick={() => setPermsFor(u)} />}
                       <IconButton icon={Lock} label="הגדרת סיסמה" small onClick={() => setPw(u)} />
                       {u.id !== me.id && <IconButton icon={Trash2} label="מחיקה" small onClick={() => remove(u)} />}
                     </div>
@@ -230,6 +319,7 @@ function Users() {
         </div>
       )}
       {form && <UserForm user={form.id ? form : null} onClose={() => setForm(null)} onSaved={() => reload({ silent: true })} />}
+      {permsFor && <UserPermissions user={permsFor} onClose={() => setPermsFor(null)} onSaved={() => reload({ silent: true })} />}
       {pw && (
         <Modal open onClose={() => setPw(null)} title={`סיסמה חדשה ל${pw.display_name}`} footer={<><Button onClick={() => setPw(null)}>ביטול</Button><Button variant="primary" onClick={setPassword}>עדכון</Button></>}>
           <Field label="סיסמה חדשה" error={pwErr} hint="המשתמש ינותק מכל המכשירים"><Input value={newPw} onChange={(e) => setNewPw(e.target.value)} dir="ltr" autoComplete="off" /></Field>
@@ -279,7 +369,7 @@ function Permissions() {
           </tbody>
         </table>
       </div>
-      <p className="subtle" style={{ padding: '12px 16px' }}>למנהל הראשי תמיד יש גישה מלאה. פעולות אישיות (צפייה במשמרות שלי, החתמת שעון, הגשת בקשות) זמינות לכל משתמש המשויך לכרטיס עובד.</p>
+      <p className="subtle" style={{ padding: '12px 16px' }}>למנהל הראשי תמיד יש גישה מלאה. כדי לתת או להסיר הרשאה למשתמש מסוים בלבד, היכנסו ללשונית "משתמשים" ולחצו על סמל המגן ליד המשתמש. פעולות אישיות (צפייה במשמרות שלי, החתמת שעון, הגשת בקשות) זמינות לכל משתמש המשויך לכרטיס עובד.</p>
     </Card>
   );
 }

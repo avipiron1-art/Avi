@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import { getDb } from '../db/index.js';
 import { config } from '../config.js';
-import { permissionsForRole } from '../services/permissions.js';
+import { permissionsForUser } from '../services/permissions.js';
 import { forbidden, unauthorized } from '../lib/errors.js';
 
 export const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
@@ -49,7 +49,7 @@ export function authenticate(req, _res, next) {
     return next();
   }
   db.prepare("UPDATE sessions SET last_seen_at = datetime('now') WHERE id = ?").run(row.session_id);
-  req.user = { ...row, permissions: permissionsForRole(row.role) };
+  req.user = { ...row, permissions: permissionsForUser(row.id, row.role) };
   req.can = (p) => req.user.permissions.has(p);
   next();
 }

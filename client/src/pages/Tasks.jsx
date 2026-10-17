@@ -100,9 +100,9 @@ export default function Tasks() {
         {t.assignee_name ? <span className="flex" style={{ gap: 6, fontSize: '.85rem' }}><Avatar name={t.assignee_name} src={t.assignee_avatar} size={22} />{t.assignee_name}</span> : <span className="subtle flex" style={{ gap: 4 }}><User size={14} />ללא אחראי</span>}
         <DueLabel date={t.due_date} status={t.status} />
       </div>
-      <div className="flex between">
+      <div className="task-card-foot">
         <span className="subtle">נוצרה ע״י {t.created_by_name || '—'}</span>
-        <div className="flex" style={{ gap: 2 }}>
+        <div className="flex flex-wrap" style={{ gap: 2 }}>
           {canMove(t) && t.status === 'new' && <Button size="sm" variant="ghost" icon={Play} onClick={() => setStatus(t, 'in_progress')}>התחלה</Button>}
           {canMove(t) && ['new', 'in_progress'].includes(t.status) && <Button size="sm" variant="ghost" icon={Check} onClick={() => setStatus(t, 'done')}>הושלם</Button>}
           {manage && <IconButton icon={Pencil} label="עריכה" small onClick={() => setForm(t)} />}

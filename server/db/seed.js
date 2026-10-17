@@ -261,6 +261,22 @@ export function seed(db = getDb(), { demo = true, adminPassword = DEMO_PASSWORDS
       }
     }
 
+    // ---------- shift preferences for next week (scheduling board demo) ----------
+    const types = db.prepare('SELECT id FROM shift_types WHERE is_active = 1 ORDER BY sort_order, id').all();
+    const nextWeek = addDays(today, 7 - weekday(today));
+    const insPref = db.prepare('INSERT INTO shift_preferences (employee_id, date, shift_type_id, preference) VALUES (?, ?, ?, ?)');
+    const insSub = db.prepare('INSERT INTO schedule_submissions (employee_id, week_start, note) VALUES (?, ?, ?)');
+    const subNotes = [null, null, 'מעדיף/ה בקרים השבוע', 'ביום שישי רק עד הצהריים', null, 'לימודים בימי שלישי'];
+    for (const e of emps.filter((x) => x.status === 'active').slice(0, 14)) {
+      insSub.run(e.id, nextWeek, pick(subNotes));
+      for (let i = 0; i < 7; i += 1) {
+        for (const t of types) {
+          const r = rnd();
+          insPref.run(e.id, addDays(nextWeek, i), t.id, r < 0.3 ? 'preferred' : r < 0.75 ? 'available' : 'unavailable');
+        }
+      }
+    }
+
     // ---------- notifications ----------
     const insN = db.prepare('INSERT INTO notifications (user_id, type, title, body, link, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
     const ts = (daysAgo, h) => `${addDays(today, -daysAgo)} ${String(h).padStart(2, '0')}:15:00`;

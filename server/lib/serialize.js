@@ -12,7 +12,7 @@ export const EMPLOYEE_JOINS = `
 
 export const SHIFT_COLUMNS = `
   s.id, s.employee_id, s.start_at, s.end_at, s.position_id, sp.name AS position_name, s.location_id,
-  sl.name AS location_name, s.note, s.status, s.created_at, s.updated_at,
+  sl.name AS location_name, s.note, s.status, s.created_at, s.updated_at, s.is_lead, s.shift_type_id,
   e.first_name || ' ' || e.last_name AS employee_name, e.avatar AS employee_avatar,
   e.department_id, d.name AS department_name, d.color AS department_color,
   a.clock_in_at, a.clock_out_at, a.marked_absent, a.note AS attendance_note`;
