@@ -595,3 +595,8 @@ td.ltr { display: table-cell; text-align: start; }
 .install-step-num { width: 26px; height: 26px; border-radius: 50%; background: var(--primary-soft); color: var(--primary-text); display: grid; place-items: center; font-weight: 700; flex-shrink: 0; }
 .inline-icon { display: inline-block; vertical-align: -3px; margin: 0 2px; }
 .sidebar-install:empty { display: none; } .sidebar-install { margin-bottom: 6px; }
+.btn-danger-text { color: var(--danger); }
+.delete-confirm { flex-wrap: wrap; align-items: flex-start; }
+.delete-confirm-icon { flex-shrink: 0; margin-top: 2px; }
+.delete-confirm-text { flex: 1; min-width: 200px; display: flex; flex-direction: column; gap: 4px; font-size: .9rem; }
+.delete-confirm-actions { display: flex; gap: 6px; flex-wrap: wrap; width: 100%; justify-content: flex-end; }

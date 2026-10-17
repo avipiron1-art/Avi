@@ -1,5 +1,5 @@
 import { useRef, useState } from 'react';
-import { Camera, Trash2 } from 'lucide-react';
+import { AlertTriangle, Camera, Trash2 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useToast } from '../lib/toast.jsx';
@@ -30,11 +30,25 @@ function resizeImage(file) {
   });
 }
 
-export default function EmployeeForm({ open, onClose, employee, onSaved }) {
-  const { meta, can } = useAuth();
+export default function EmployeeForm({ open, onClose, employee, onSaved, onDeleted }) {
+  const { meta, can, user, reloadMeta } = useAuth();
   const toast = useToast();
   const fileRef = useRef(null);
   const [saving, setSaving] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const canDelete = employee && can('employees.delete') && user.employee_id !== employee.id;
+
+  const remove = async () => {
+    setDeleting(true);
+    try {
+      await api.del(`/employees/${employee.id}`);
+      toast.success(`${employee.first_name} ${employee.last_name} נמחק/ה מהמערכת`);
+      reloadMeta?.();
+      onClose();
+      onDeleted?.(employee);
+    } catch (e) { toast.error(e); } finally { setDeleting(false); }
+  };
   const init = employee ? Object.fromEntries(Object.keys(EMPTY).map((k) => [k, employee[k] ?? ''])) : EMPTY;
   const { values: v, set, setValues, errors, setErrors } = useForm({ ...init, avatar: employee?.avatar || null });
 
@@ -64,7 +78,28 @@ export default function EmployeeForm({ open, onClose, employee, onSaved }) {
 
   return (
     <Modal open={open} onClose={onClose} wide title={employee ? 'עריכת עובד' : 'הוספת עובד חדש'}
-      footer={<><Button onClick={onClose}>ביטול</Button><Button variant="primary" loading={saving} onClick={submit}>{employee ? 'שמירת שינויים' : 'הוספת עובד'}</Button></>}>
+      footer={(
+        <>
+          {canDelete && !confirmDelete && (
+            <Button variant="ghost" icon={Trash2} className="btn-danger-text" style={{ marginInlineEnd: 'auto' }} onClick={() => setConfirmDelete(true)}>מחיקת עובד</Button>
+          )}
+          <Button onClick={onClose}>ביטול</Button>
+          <Button variant="primary" loading={saving} onClick={submit} disabled={confirmDelete}>{employee ? 'שמירת שינויים' : 'הוספת עובד'}</Button>
+        </>
+      )}>
+      {confirmDelete && (
+        <div className="alert tone-danger mb delete-confirm" role="alertdialog" aria-label="אישור מחיקה" ref={(el) => el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })}>
+          <AlertTriangle size={20} className="delete-confirm-icon" />
+          <div className="delete-confirm-text">
+            <strong>למחוק את {employee.first_name} {employee.last_name} לצמיתות?</strong>
+            <span>יימחקו גם המשמרות, הנוכחות, הבקשות וחשבון הכניסה שלו/ה. לא ניתן לבטל את הפעולה. אם העובד/ת רק עזב/ה, עדיף לשנות סטטוס ל"לא פעיל" ולשמור את ההיסטוריה.</span>
+          </div>
+          <div className="delete-confirm-actions">
+            <Button size="sm" onClick={() => setConfirmDelete(false)} disabled={deleting}>ביטול</Button>
+            <Button size="sm" variant="danger" icon={Trash2} onClick={remove} loading={deleting}>כן, למחוק</Button>
+          </div>
+        </div>
+      )}
       <form onSubmit={submit} noValidate>
         <div className="flex gap-lg mb">
           <Avatar name={`${v.first_name} ${v.last_name}`.trim() || '?'} src={v.avatar} size={72} />
