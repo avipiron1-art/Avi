@@ -5,6 +5,9 @@ import App from './App.jsx';
 import { AuthProvider } from './lib/auth.jsx';
 import { ToastProvider } from './lib/toast.jsx';
 import './styles.css';
+import { registerServiceWorker } from './lib/install.js';
+
+registerServiceWorker();
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

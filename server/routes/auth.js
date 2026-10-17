@@ -90,6 +90,9 @@ router.post('/login', loginLimiter, ah(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Public: whether to show the demo quick-login buttons (only in demo installs)
+router.get('/options', (req, res) => res.json({ demo: config.demoMode }));
+
 router.post('/logout', (req, res) => {
   endSession(req, res);
   res.json({ ok: true });

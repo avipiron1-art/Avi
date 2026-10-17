@@ -67,8 +67,18 @@ export function createApp() {
   // Serve the built SPA
   const dist = path.join(config.root, 'client', 'dist');
   if (fs.existsSync(dist)) {
-    app.use(express.static(dist, { index: false, maxAge: '1h' }));
-    app.get('*', (req, res) => res.sendFile(path.join(dist, 'index.html')));
+    app.use(express.static(dist, {
+      index: false,
+      maxAge: '1h',
+      setHeaders: (res, file) => {
+        // The service worker and manifest must always be re-checked so app updates arrive immediately
+        if (/(sw\.js|manifest\.webmanifest|offline\.html)$/.test(file)) res.setHeader('Cache-Control', 'no-cache');
+        if (file.endsWith('.webmanifest')) res.setHeader('Content-Type', 'application/manifest+json');
+        // Hashed build assets never change
+        if (file.includes(`${path.sep}assets${path.sep}`)) res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      },
+    }));
+    app.get('*', (req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.sendFile(path.join(dist, 'index.html')); });
   }
 
   // Central error handler: friendly messages to the user, details only in server logs

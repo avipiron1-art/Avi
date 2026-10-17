@@ -1,8 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useLocation } from 'react-router';
 import { CalendarDays, Clock, ShieldCheck, BarChart3, Eye, EyeOff, LogIn } from 'lucide-react';
 import { useAuth } from '../lib/auth.jsx';
+import { api } from '../lib/api.js';
 import { Button, Field, Input } from '../components/ui.jsx';
+import { InstallButton } from '../components/InstallApp.jsx';
 
 const DEMO = [
   { label: 'מנהל ראשי', id: 'admin', pw: 'Admin1234' },
@@ -43,6 +45,8 @@ export default function Login() {
   const [show, setShow] = useState(false);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [demo, setDemo] = useState(false);
+  useEffect(() => { api.get('/auth/options').then((o) => setDemo(o.demo)).catch(() => {}); }, []);
 
   const submit = async (e, creds) => {
     e?.preventDefault();
@@ -87,6 +91,9 @@ export default function Login() {
         </div>
         <Button type="submit" variant="primary" size="lg" block loading={loading} icon={LogIn}>התחברות</Button>
 
+        <InstallButton block />
+
+        {demo && (
         <div className="demo-box">
           <span className="subtle">כניסה מהירה למערכת הדמו:</span>
           <div className="btns">
@@ -95,6 +102,7 @@ export default function Login() {
             ))}
           </div>
         </div>
+        )}
       </form>
     </AuthShell>
   );
