@@ -49,8 +49,9 @@ id shiftly >/dev/null 2>&1 || useradd --system --home "$APP_DIR" --shell /usr/sb
 mkdir -p "$DATA_DIR" "$BACKUP_DIR"
 if [ -d "$APP_DIR/.git" ]; then
   say "Updating the app"
-  git -C "$APP_DIR" fetch -q origin "$BRANCH"
-  git -C "$APP_DIR" reset -q --hard "origin/$BRANCH"
+  # The checkout is owned by the service user; tell git that's expected when running as root
+  git -c safe.directory="$APP_DIR" -C "$APP_DIR" fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+  git -c safe.directory="$APP_DIR" -C "$APP_DIR" reset -q --hard "origin/$BRANCH"
 else
   say "Downloading the app"
   rm -rf "$APP_DIR"
