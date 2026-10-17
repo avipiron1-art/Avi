@@ -769,3 +769,59 @@ test('branch manager sees only their branch; an on-duty shift lead gets attendan
   assert.equal((await lead.put(`/attendance/${outside.id}`, { marked_absent: true })).status, 403);
   assert.equal((await lead.get('/employees')).status, 403, 'no other manager rights');
 });
+
+test('email: settings are admin-only and secret, reset/invite/notifications send mail, digests group updates', async () => {
+  const { sentInTests, flushAllMail } = await import('../services/mailer.js');
+  const admin = await login('admin', 'Admin1234');
+  const emp = await login('yossi', 'Employee1234');
+  assert.equal((await emp.get('/mail/status')).status, 403);
+  assert.equal((await admin.put('/mail/config', { provider: 'gmail', user: 'not-an-email', pass: 'x' })).status, 400);
+  const ok = await admin.put('/mail/config', { provider: 'gmail', user: 'biz@gmail.com', pass: 'abcd efgh ijkl mnop', from_name: 'המסעדה' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.enabled, true);
+  assert.equal(ok.body.host, 'smtp.gmail.com');
+  assert.equal(JSON.stringify(ok.body).includes('abcdefgh'), false, 'password never returned');
+  assert.equal(JSON.stringify((await admin.get('/settings')).body).includes('abcdefgh'), false);
+  // saving again without the password keeps it
+  assert.equal((await admin.put('/mail/config', { provider: 'gmail', user: 'biz@gmail.com', from_name: 'X' })).status, 200);
+  assert.equal((await fetch(`${base}/auth/options`).then((r) => r.json())).mail, true);
+
+  sentInTests.length = 0;
+  assert.equal((await admin.post('/mail/test')).status, 200);
+  assert.equal(sentInTests.length, 1);
+
+  // password reset email has the link in the button
+  sentInTests.length = 0;
+  await fetch(`${base}/auth/forgot`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identifier: 'yossi' }) });
+  assert.equal(sentInTests.length, 1);
+  assert.match(sentInTests[0].html, /reset-password\?token=/);
+  assert.match(sentInTests[0].html, /dir="rtl"/);
+
+  // invite by email
+  sentInTests.length = 0;
+  const inv = await admin.post('/invites', { send_to: ['new1@example.com', 'new2@example.com'] });
+  assert.equal(inv.status, 201);
+  assert.equal(sentInTests.filter((m) => /join\//.test(m.text)).length, 2);
+
+  // important notifications are grouped into one email per person (demo addresses are skipped, so use a real-looking one)
+  const db = getDb();
+  db.prepare("UPDATE users SET email = 'yossi.real@example.com' WHERE username = 'yossi'").run();
+  sentInTests.length = 0;
+  const yid = (await emp.get('/auth/me')).body.user.employee_id;
+  await admin.post('/shifts', { employee_ids: [yid], date: '2032-01-05', start_time: '08:00', end_time: '12:00', force: true });
+  await admin.post('/shifts', { employee_ids: [yid], date: '2032-01-06', start_time: '08:00', end_time: '12:00', force: true });
+  await flushAllMail();
+  const toY = sentInTests.filter((m) => m.to === 'yossi.real@example.com');
+  assert.equal(toY.length, 1, 'one grouped email');
+  assert.match(toY[0].subject, /2 עדכונים/);
+  // opt out
+  assert.equal((await emp.put('/auth/email-notifications', { enabled: false })).status, 200);
+  sentInTests.length = 0;
+  await admin.post('/shifts', { employee_ids: [yid], date: '2032-01-07', start_time: '08:00', end_time: '12:00', force: true });
+  await flushAllMail();
+  assert.equal(sentInTests.filter((m) => m.to === 'yossi.real@example.com').length, 0);
+  assert.equal((await emp.get('/auth/me')).body.user.email_notifications, false);
+  await emp.put('/auth/email-notifications', { enabled: true });
+  db.prepare("UPDATE users SET email = 'yossi@shiftly.demo' WHERE username = 'yossi'").run();
+  assert.equal((await admin.del('/mail/config')).body.enabled, false);
+});

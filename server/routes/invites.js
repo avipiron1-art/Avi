@@ -10,6 +10,7 @@ import { requirePerm, startSession, hashToken, newToken } from '../middleware/au
 import { audit } from '../services/audit.js';
 import { notifyPermission } from '../services/notify.js';
 import { getSetting } from '../services/settings.js';
+import { renderEmail, sendMail } from '../services/mailer.js';
 
 // ---------- manager side (mounted under the authenticated API) ----------
 export const invitesRouter = Router();
@@ -31,7 +32,9 @@ invitesRouter.post('/', requirePerm('employees.manage'), ah((req, res) => {
     max_uses: z.coerce.number().int().min(1).max(200).default(1),
     expires_days: z.coerce.number().int().min(1).max(30).default(7),
     department_id: zOptId, position_id: zOptId, location_id: zOptId,
+    send_to: z.array(z.string().trim().toLowerCase().email('כתובת מייל לא תקינה')).max(20).optional().default([]), // email the link
   }), req.body);
+  if (d.send_to.length > d.max_uses) d.max_uses = Math.min(200, d.send_to.length);
   if (req.user.location_id && d.location_id && d.location_id !== req.user.location_id) throw badRequest('ניתן להזמין עובדים רק לסניף שלך');
   const token = newToken();
   const expires = new Date(Date.now() + d.expires_days * 86400000).toISOString();
@@ -40,7 +43,20 @@ invitesRouter.post('/', requirePerm('employees.manage'), ah((req, res) => {
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(hashToken(token), d.label || null, req.user.id, d.department_id, d.position_id, d.location_id || req.user.location_id || null, d.max_uses, expires).lastInsertRowid;
   audit(req, { action: 'invite.create', entityType: 'invite', entityId: id, description: `${req.user.display_name} יצר/ה קישור הצטרפות לעובדים${d.label ? ` (${d.label})` : ''}`, newValue: { ...d, expires_at: expires } });
-  res.status(201).json({ id, link: `${config.appUrl}/join/${token}`, path: `/join/${token}`, expires_at: expires, message: 'קישור ההצטרפות נוצר' });
+  const link = `${config.appUrl}/join/${token}`;
+  if (d.send_to.length) {
+    const biz = getSetting('business_name') || 'Shiftly';
+    const mail = renderEmail({
+      title: `הוזמנת להצטרף לצוות של ${biz}`,
+      lines: [`${req.user.display_name} מזמין/ה אותך להצטרף למערכת המשמרות של ${biz}.`, 'לחצו על הכפתור, מלאו את הפרטים ובחרו סיסמה – ותוכלו לראות משמרות, להחתים שעון ולהגיש בקשות.'],
+      button: { label: 'הצטרפות', url: link }, footer: `הקישור בתוקף ${d.expires_days} ימים.`,
+    });
+    for (const to of d.send_to) sendMail({ to, subject: `הזמנה להצטרף ל-${biz}`, ...mail }).catch(() => {});
+  }
+  res.status(201).json({
+    id, link, path: `/join/${token}`, expires_at: expires,
+    message: d.send_to.length ? `ההזמנה נשלחה במייל ל-${d.send_to.length} ${d.send_to.length === 1 ? 'אדם' : 'אנשים'}` : 'קישור ההצטרפות נוצר',
+  });
 }));
 
 invitesRouter.delete('/:id', requirePerm('employees.manage'), ah((req, res) => {
@@ -115,6 +131,12 @@ joinRouter.post('/:token', joinLimiter, ah(async (req, res) => {
     type: 'employee_joined', title: `עובד/ת חדש/ה הצטרף/ה: ${name}`,
     body: `שם משתמש: ${d.username} · טלפון: ${d.phone} · ${d.email}`, link: `/employees/${employeeId}`,
   });
+  const welcome = renderEmail({
+    title: `ברוכים הבאים, ${d.first_name}!`,
+    lines: [`נרשמת בהצלחה למערכת של ${getSetting('business_name') || 'Shiftly'}.`, `שם המשתמש שלך: ${d.username}`, 'מומלץ להתקין את האפליקציה בטלפון ולהפעיל התראות כדי לא לפספס משמרות.'],
+    button: { label: 'כניסה למערכת', url: config.appUrl },
+  });
+  sendMail({ to: d.email, subject: 'ברוכים הבאים לצוות', ...welcome }).catch(() => {});
   startSession(req, res, userId, true);
   res.status(201).json({ ok: true, message: `ברוכים הבאים, ${d.first_name}!` });
 }));

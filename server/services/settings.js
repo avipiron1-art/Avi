@@ -22,7 +22,7 @@ export const DEFAULT_SETTINGS = {
 };
 
 /** Settings that must never leave the server. */
-export const SECRET_SETTINGS = ['vapid_private', 'gdrive_client_secret', 'gdrive_refresh_token', 'perm_v3'];
+export const SECRET_SETTINGS = ['vapid_private', 'gdrive_client_secret', 'gdrive_refresh_token', 'perm_v3', 'smtp_pass'];
 
 let cache = null;
 

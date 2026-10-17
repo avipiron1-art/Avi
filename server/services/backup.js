@@ -9,6 +9,7 @@ import { getDb } from '../db/index.js';
 import { getSetting, updateSettings } from './settings.js';
 import { nowLocal } from '../lib/time.js';
 import { audit } from './audit.js';
+import { notifyPermission } from './notify.js';
 
 const OAUTH = process.env.GOOGLE_OAUTH_BASE || 'https://oauth2.googleapis.com';
 const DRIVE = process.env.GOOGLE_DRIVE_BASE || 'https://www.googleapis.com';
@@ -171,5 +172,8 @@ export function maybeDailyBackup() {
   // after a failure wait an hour before retrying
   const errAt = Date.parse(lastErr.split(' ')[0]);
   if (errAt && errAt > Date.now() - 3600 * 1000) return;
-  runDriveBackup().catch((e) => console.error('[backup]', e.message));
+  runDriveBackup().catch((e) => {
+    console.error('[backup]', e.message);
+    notifyPermission('users.manage', { type: 'backup_failed', title: 'הגיבוי הלילי ל-Google Drive נכשל', body: e.message, link: '/settings?tab=backup', email: true });
+  });
 }
