@@ -34,12 +34,14 @@ fi
 # ---------- packages ----------
 say "Installing system packages"
 export DEBIAN_FRONTEND=noninteractive
-apt-get update -qq
-apt-get install -y -qq ca-certificates curl git sqlite3 caddy >/dev/null
+# A fresh VM runs automatic updates for a few minutes after boot; wait for them instead of failing
+APT=(apt-get -o DPkg::Lock::Timeout=900)
+"${APT[@]}" update -qq
+"${APT[@]}" install -y -qq ca-certificates curl git sqlite3 caddy >/dev/null
 if ! command -v node >/dev/null || [ "$(node -p 'process.versions.node.split(".")[0]')" -lt 20 ]; then
   say "Installing Node.js 22"
   curl -fsSL https://deb.nodesource.com/setup_22.x | bash - >/dev/null
-  apt-get install -y -qq nodejs >/dev/null
+  "${APT[@]}" install -y -qq nodejs >/dev/null
 fi
 
 # ---------- app user & code ----------
@@ -47,8 +49,9 @@ id shiftly >/dev/null 2>&1 || useradd --system --home "$APP_DIR" --shell /usr/sb
 mkdir -p "$DATA_DIR" "$BACKUP_DIR"
 if [ -d "$APP_DIR/.git" ]; then
   say "Updating the app"
-  git -C "$APP_DIR" fetch -q origin "$BRANCH"
-  git -C "$APP_DIR" reset -q --hard "origin/$BRANCH"
+  # The checkout is owned by the service user; tell git that's expected when running as root
+  git -c safe.directory="$APP_DIR" -C "$APP_DIR" fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+  git -c safe.directory="$APP_DIR" -C "$APP_DIR" reset -q --hard "origin/$BRANCH"
 else
   say "Downloading the app"
   rm -rf "$APP_DIR"
