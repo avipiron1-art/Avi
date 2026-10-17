@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { ArrowRight, MailCheck, KeyRound } from 'lucide-react';
 import { api } from '../lib/api.js';
@@ -11,6 +11,9 @@ export function ForgotPassword() {
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(null);
   const [error, setError] = useState('');
+  const [opts, setOpts] = useState(null);
+  useEffect(() => { api.get('/auth/options').then(setOpts).catch(() => {}); }, []);
+  const noMail = opts && !opts.mail && !opts.demo;
 
   const submit = async (e) => {
     e.preventDefault();
@@ -27,7 +30,9 @@ export function ForgotPassword() {
           <h1>איפוס סיסמה</h1>
           <p className="muted" style={{ marginTop: 6 }}>נשלח אליכם קישור לבחירת סיסמה חדשה</p>
         </div>
-        {done ? (
+        {noMail ? (
+          <div className="alert tone-info"><KeyRound size={20} /><span>שליחת מיילים עדיין לא הוגדרה במערכת. פנו למנהל – הוא יכול לקבוע לכם סיסמה חדשה ממסך המשתמשים.</span></div>
+        ) : done ? (
           <div className="alert tone-success"><MailCheck size={20} /><div>
             {done.message}
             {done.demo_reset_path && (

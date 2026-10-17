@@ -23,6 +23,7 @@ function migrate(d) {
   add('employees', 'national_id', 'TEXT');                                // ת"ז – for the accountant report
   add('users', 'location_id', 'INTEGER REFERENCES locations(id) ON DELETE SET NULL'); // branch scope (NULL = all)
   add('users', 'totp_secret', 'TEXT');
+  add('users', 'email_notifications', 'INTEGER NOT NULL DEFAULT 1');      // important notifications also by email
   add('users', 'totp_enabled', 'INTEGER NOT NULL DEFAULT 0');
   add('users', 'recovery_codes', 'TEXT');                                 // JSON array of sha256 hashes
   add('users', 'dashboard_prefs', 'TEXT');                                // JSON: hidden widgets

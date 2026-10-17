@@ -7,7 +7,7 @@ import { ah, badRequest, forbidden, unauthorized } from '../lib/errors.js';
 import { validate, z, zPassword } from '../lib/validate.js';
 import { startSession, endSession, requireAuth, hashToken, newToken, csrf } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
-import { sendMail } from '../services/mailer.js';
+import { sendMail, renderEmail, mailEnabled } from '../services/mailer.js';
 import QRCode from 'qrcode';
 import {
   generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse,
@@ -140,6 +140,19 @@ router.post('/login/mfa', loginLimiter, ah(async (req, res) => {
 }));
 
 // ------------------------- account security -------------------------
+/** Short "was this you?" email after security changes. */
+function securityNotice(userId, what) {
+  const u = getDb().prepare('SELECT email, display_name FROM users WHERE id = ?').get(userId);
+  if (!u?.email) return;
+  const mail = renderEmail({ title: what, lines: [`שלום ${u.display_name},`, `${what} (${new Date().toLocaleString('he-IL', { timeZone: getSetting('timezone') || 'Asia/Jerusalem' })}).`, 'אם זה לא היית את/ה – פנו מיד למנהל המערכת.'] });
+  sendMail({ to: u.email, subject: what, ...mail }).catch(() => {});
+}
+
+router.put('/email-notifications', requireAuth, csrf, ah((req, res) => {
+  const { enabled } = validate(z.object({ enabled: z.boolean() }), req.body);
+  getDb().prepare('UPDATE users SET email_notifications = ? WHERE id = ?').run(enabled ? 1 : 0, req.user.id);
+  res.json({ enabled, message: enabled ? 'התראות חשובות יישלחו גם למייל' : 'התראות במייל כובו' });
+}));
 const passwordOk = async (userId, password) => {
   const u = getDb().prepare('SELECT password_hash FROM users WHERE id = ?').get(userId);
   return !!password && bcrypt.compare(password, u.password_hash);
@@ -186,6 +199,7 @@ router.post('/2fa/disable', requireAuth, csrf, ah(async (req, res) => {
   const { password } = validate(z.object({ password: z.string().max(200).default('') }), req.body);
   await requirePassword(req, password);
   getDb().prepare('UPDATE users SET totp_enabled = 0, totp_secret = NULL, recovery_codes = NULL, totp_last_step = NULL WHERE id = ?').run(req.user.id);
+  securityNotice(req.user.id, 'אימות דו-שלבי כובה בחשבון שלך');
   audit(req, { action: 'auth.2fa_disabled', entityType: 'user', entityId: req.user.id, description: `${req.user.display_name} כיבה/תה אימות דו-שלבי` });
   res.json({ ok: true, message: 'אימות דו-שלבי כובה' });
 }));
@@ -277,7 +291,7 @@ router.post('/passkeys/login/verify', loginLimiter, ah(async (req, res) => {
 }));
 
 // Public: whether to show the demo quick-login buttons (only in demo installs)
-router.get('/options', (req, res) => res.json({ demo: config.demoMode }));
+router.get('/options', (req, res) => res.json({ demo: config.demoMode, mail: mailEnabled() }));
 
 router.post('/logout', (req, res) => {
   endSession(req, res);
@@ -285,10 +299,10 @@ router.post('/logout', (req, res) => {
 });
 
 router.get('/me', requireAuth, (req, res) => {
-  const row = getDb().prepare('SELECT dashboard_prefs FROM users WHERE id = ?').get(req.user.id);
+  const row = getDb().prepare('SELECT dashboard_prefs, email_notifications FROM users WHERE id = ?').get(req.user.id);
   let prefs = {};
   try { prefs = JSON.parse(row?.dashboard_prefs || '{}'); } catch { /* ignore */ }
-  res.json({ user: { ...publicUser(req.user), prefs } });
+  res.json({ user: { ...publicUser(req.user), prefs, email_notifications: !!row?.email_notifications, mail_enabled: mailEnabled() } });
 });
 
 // Personal home screen: which page opens first and which dashboard blocks are hidden.
@@ -312,7 +326,11 @@ router.post('/forgot', resetLimiter, ah(async (req, res) => {
     db.prepare("INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES (?, ?, datetime('now', '+1 hour'))")
       .run(user.id, hashToken(token));
     const link = `${config.appUrl}/reset-password?token=${token}`;
-    await sendMail({ to: user.email, subject: 'איפוס סיסמה', text: `לאיפוס הסיסמה היכנסו לקישור (בתוקף לשעה):\n${link}` });
+    const mail = renderEmail({
+      title: 'איפוס סיסמה', lines: [`שלום ${user.display_name},`, 'קיבלנו בקשה לאיפוס הסיסמה שלך. לחצו על הכפתור כדי לבחור סיסמה חדשה. הקישור בתוקף לשעה אחת.'],
+      button: { label: 'בחירת סיסמה חדשה', url: link }, footer: 'לא ביקשת? אפשר להתעלם מהמייל – הסיסמה לא תשתנה.',
+    });
+    await sendMail({ to: user.email, subject: 'איפוס סיסמה', ...mail });
     audit({ user: { id: user.id, display_name: user.display_name }, ip: req.ip }, {
       action: 'auth.reset_requested', entityType: 'user', entityId: user.id, description: `התבקש איפוס סיסמה עבור ${user.display_name}`,
     });
@@ -334,6 +352,7 @@ router.post('/reset', resetLimiter, ah(async (req, res) => {
     db.prepare("UPDATE password_resets SET used_at = datetime('now') WHERE id = ?").run(row.id);
     db.prepare('DELETE FROM sessions WHERE user_id = ?').run(row.user_id); // sign out everywhere
   })();
+  securityNotice(row.user_id, 'הסיסמה שלך אופסה');
   audit({ user: { id: row.user_id, display_name: row.display_name }, ip: req.ip }, {
     action: 'auth.password_reset', entityType: 'user', entityId: row.user_id, description: `${row.display_name} איפס/ה סיסמה`,
   });
@@ -378,6 +397,7 @@ router.post('/change-password', requireAuth, csrf, ah(async (req, res) => {
   db.prepare("UPDATE users SET password_hash = ?, updated_at = datetime('now') WHERE id = ?").run(hash, req.user.id);
   db.prepare('DELETE FROM sessions WHERE user_id = ? AND id != ?').run(req.user.id, req.user.session_id);
   audit(req, { action: 'auth.password_change', entityType: 'user', entityId: req.user.id, description: `${req.user.display_name} שינה/תה סיסמה` });
+  securityNotice(req.user.id, 'הסיסמה שלך שונתה');
   res.json({ ok: true });
 }));
 

@@ -117,7 +117,7 @@ const settingsSchema = z.object({
   backup_keep: z.coerce.number().int().min(1).max(365).optional(),
 });
 
-const publicSettings = () => Object.fromEntries(Object.entries(loadSettings()).filter(([k]) => !SECRET_SETTINGS.includes(k) && !k.startsWith('gdrive_') && !k.startsWith('vapid_')));
+const publicSettings = () => Object.fromEntries(Object.entries(loadSettings()).filter(([k]) => !SECRET_SETTINGS.includes(k) && !k.startsWith('gdrive_') && !k.startsWith('vapid_') && !k.startsWith('smtp_')));
 
 router.get('/settings', requirePerm('settings.manage'), (req, res) => res.json({ settings: publicSettings() }));
 

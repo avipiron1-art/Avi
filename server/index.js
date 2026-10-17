@@ -23,6 +23,7 @@ import backupRoutes from './routes/backup.js';
 import calendarRoutes from './routes/calendar.js';
 import swapRoutes from './routes/swaps.js';
 import announcementRoutes from './routes/announcements.js';
+import mailRoutes from './routes/mail.js';
 import { invitesRouter, joinRouter } from './routes/invites.js';
 import { seedIfEmpty } from './db/seed.js';
 import { startJobs } from './services/jobs.js';
@@ -78,6 +79,7 @@ export function createApp() {
   api.use('/calendar', calendarRoutes);
   api.use('/swaps', swapRoutes);
   api.use('/announcements', announcementRoutes);
+  api.use('/mail', requirePerm('settings.manage'), mailRoutes);
   api.use('/', adminRoutes);
   api.use((req, res) => res.status(404).json({ error: 'הכתובת המבוקשת לא נמצאה' }));
   app.use('/api', api);

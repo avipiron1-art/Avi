@@ -9,21 +9,26 @@ import { dateTime } from '../lib/format.js';
 
 /** Create & share join links for new employees. */
 export default function InviteModal({ onClose }) {
-  const { meta } = useAuth();
+  const { meta, user } = useAuth();
   const toast = useToast();
   const list = useApi('/invites');
   const [created, setCreated] = useState(null);
   const [saving, setSaving] = useState(false);
   const [copied, setCopied] = useState(false);
-  const { values: v, set } = useForm({ label: '', max_uses: 1, expires_days: 7, department_id: '', position_id: '', location_id: '' });
+  const { values: v, set } = useForm({ label: '', max_uses: 1, expires_days: 7, department_id: '', position_id: '', location_id: '', emails: '' });
+  const [errors, setErrors] = useState({});
 
   const create = async () => {
     setSaving(true);
     try {
-      const r = await api.post('/invites', v);
+      const { emails, ...body } = v;
+      const sendTo = emails.split(/[\s,;]+/).map((x) => x.trim()).filter(Boolean);
+      const r = await api.post('/invites', { ...body, send_to: sendTo });
+      if (sendTo.length) toast.success(r.message);
+      setErrors({});
       setCreated({ ...r, link: `${window.location.origin}${r.path}` });
       list.reload({ silent: true });
-    } catch (e) { toast.error(e); } finally { setSaving(false); }
+    } catch (e) { setErrors(e.fields || {}); toast.error(e); } finally { setSaving(false); }
   };
   const message = created && `שלום! הוזמנת להצטרף למערכת המשמרות של ${meta.settings.business_name}.\nלהרשמה: ${created.link}`;
   const copy = async () => {
@@ -55,6 +60,11 @@ export default function InviteModal({ onClose }) {
             <Field label="בתוקף למשך (ימים)"><Input type="number" min="1" max="30" value={v.expires_days} onChange={set('expires_days')} /></Field>
             <Field label="מחלקה"><Select value={v.department_id} onChange={set('department_id')}><option value="">ללא</option>{meta.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select></Field>
             <Field label="תפקיד"><Select value={v.position_id} onChange={set('position_id')}><option value="">ללא</option>{meta.positions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select></Field>
+            {user.mail_enabled && (
+              <Field label="שליחה במייל (לא חובה)" className="full" hint="כתובת אחת או כמה, מופרדות בפסיק. אפשר גם לשלוח בוואטסאפ אחרי היצירה" error={errors.send_to ? 'כתובת מייל לא תקינה' : undefined}>
+                <Input className="ltr" value={v.emails} onChange={set('emails')} placeholder="dana@gmail.com, avi@gmail.com" inputMode="email" />
+              </Field>
+            )}
             <Field label="סניף"><Select value={v.location_id} onChange={set('location_id')}><option value="">ללא</option>{meta.locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select></Field>
           </div>
           <div className="mt"><Button variant="primary" icon={Link2} onClick={create} loading={saving}>יצירת קישור</Button></div>

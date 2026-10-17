@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
-  KeyRound, Building2, Network, UserCog, ShieldCheck, History, Plus, Pencil, Trash2, Save, Search, Lock, ChevronDown, ChevronUp, Moon, Sun, RotateCcw, MapPin, Upload, Image as ImageIcon, Fingerprint, CloudUpload,
+  KeyRound, Building2, Network, UserCog, ShieldCheck, History, Plus, Pencil, Trash2, Save, Search, Lock, ChevronDown, ChevronUp, Moon, Sun, RotateCcw, MapPin, Upload, Image as ImageIcon, Fingerprint, CloudUpload, Mail,
 } from 'lucide-react';
 import { useApi, useDebounced } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
@@ -15,6 +15,7 @@ import { dateTime } from '../lib/format.js';
 import { applyBrandColor, useBranding } from '../lib/branding.jsx';
 import SecuritySettings from '../components/SecuritySettings.jsx';
 import BackupSettings from '../components/BackupSettings.jsx';
+import MailSettings from '../components/MailSettings.jsx';
 
 // ---------------- profile ----------------
 function Profile() {
@@ -42,6 +43,24 @@ function Profile() {
       </Card>
       <Account />
     </div>
+  );
+}
+
+/** Important notifications also by email (shift assigned, request answered, urgent announcements). */
+function EmailToggle() {
+  const toast = useToast();
+  const { user, refresh } = useAuth();
+  const [on, setOn] = useState(!!user.email_notifications);
+  const change = async (e) => {
+    const enabled = e.target.checked;
+    setOn(enabled);
+    try { const r = await api.put('/auth/email-notifications', { enabled }); toast.success(r.message); refresh(); } catch (err) { setOn(!enabled); toast.error(err); }
+  };
+  return (
+    <label className="checkbox mt" style={{ alignItems: 'flex-start' }}>
+      <input type="checkbox" checked={on} onChange={change} />
+      <span>קבלת התראות חשובות גם במייל<br /><span className="subtle">שיבוץ ושינוי משמרות, תשובות לבקשות והודעות דחופות</span></span>
+    </label>
   );
 }
 
@@ -86,6 +105,7 @@ function Account() {
           <div><div className="k">תפקיד</div><div className="v">{user.role_name}</div></div>
         </div>
       )}
+      {user.mail_enabled && <EmailToggle />}
       <div className="mt"><Button icon={theme === 'dark' ? Sun : Moon} onClick={toggle}>{theme === 'dark' ? 'מעבר למצב בהיר' : 'מעבר למצב כהה'}</Button></div>
     </Card>
   );
@@ -574,7 +594,7 @@ export default function SettingsPage() {
   const tabs = [
     { value: 'profile', label: 'הפרופיל שלי', icon: KeyRound },
     { value: 'security', label: 'אבטחה', icon: Fingerprint },
-    ...(can('settings.manage') ? [{ value: 'business', label: 'הגדרות עסק', icon: Building2 }, { value: 'structure', label: 'מבנה ארגוני', icon: Network }] : []),
+    ...(can('settings.manage') ? [{ value: 'business', label: 'הגדרות עסק', icon: Building2 }, { value: 'structure', label: 'מבנה ארגוני', icon: Network }, { value: 'mail', label: 'מיילים', icon: Mail }] : []),
     ...(can('users.manage') ? [{ value: 'users', label: 'משתמשים', icon: UserCog }, { value: 'permissions', label: 'הרשאות', icon: ShieldCheck }, { value: 'backup', label: 'גיבוי', icon: CloudUpload }] : []),
     ...(can('audit.view') ? [{ value: 'audit', label: 'יומן פעולות', icon: History }] : []),
   ];
@@ -591,6 +611,7 @@ export default function SettingsPage() {
       {tab === 'permissions' && <Permissions />}
       {tab === 'audit' && <Audit />}
       {tab === 'backup' && <BackupSettings />}
+      {tab === 'mail' && <MailSettings />}
     </>
   );
 }
