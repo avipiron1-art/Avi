@@ -10,6 +10,7 @@ import { api } from '../lib/api.js';
 import { Avatar, IconButton } from './ui.jsx';
 import GlobalSearch from './GlobalSearch.jsx';
 import NotificationBell from './NotificationBell.jsx';
+import { InstallBanner, InstallButton } from './InstallApp.jsx';
 
 /** Navigation items; `perm` = any of these permissions, `employee` = needs an employee card. */
 export const NAV = [
@@ -89,6 +90,7 @@ export default function Layout() {
           ))}
         </nav>
         <div className="sidebar-footer">
+          <div className="sidebar-install"><InstallButton block variant="ghost" /></div>
           <div className="person" style={{ padding: 6 }}>
             <Avatar name={user.display_name} size={34} />
             <div style={{ minWidth: 0, flex: 1 }}>
@@ -134,6 +136,7 @@ export default function Layout() {
           </div>
         </header>
         <main className="content">
+          <InstallBanner />
           <Outlet />
         </main>
       </div>

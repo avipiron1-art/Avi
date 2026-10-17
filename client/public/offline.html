@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#4f46e5" />
+  <title>אין חיבור – Shiftly</title>
+  <style>
+    :root { --bg: #f5f6fa; --card: #fff; --text: #111827; --muted: #4b5563; color-scheme: light dark; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #0d1017; --card: #161a23; --text: #f1f3f8; --muted: #b4bccc; } }
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 16px; background: var(--bg); color: var(--text);
+      font-family: system-ui, -apple-system, 'Segoe UI', Arial, sans-serif; box-sizing: border-box; }
+    .card { background: var(--card); border-radius: 20px; padding: 32px 24px; max-width: 380px; width: 100%; text-align: center; box-shadow: 0 10px 30px rgba(0,0,0,.08); }
+    img { width: 72px; height: 72px; border-radius: 18px; }
+    h1 { font-size: 1.3rem; margin: 16px 0 8px; }
+    p { color: var(--muted); margin: 0 0 20px; line-height: 1.5; }
+    button { height: 48px; padding: 0 24px; border: 0; border-radius: 12px; background: #4f46e5; color: #fff; font: inherit; font-weight: 700; cursor: pointer; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <img src="/icons/icon-192.png" alt="" />
+    <h1>אין חיבור לאינטרנט</h1>
+    <p>Shiftly צריכה חיבור כדי להציג נתונים עדכניים. בדקו את החיבור ונסו שוב.</p>
+    <button type="button" onclick="location.reload()">נסו שוב</button>
+  </div>
+</body>
+</html>

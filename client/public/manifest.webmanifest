@@ -1,0 +1,24 @@
+{
+  "name": "Shiftly – ניהול עובדים ומשמרות",
+  "short_name": "Shiftly",
+  "description": "ניהול עובדים, סידור עבודה, נוכחות ומשימות",
+  "lang": "he",
+  "dir": "rtl",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f5f6fa",
+  "theme_color": "#4f46e5",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "סידור עבודה", "url": "/schedule", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "נוכחות – החתמת שעון", "short_name": "נוכחות", "url": "/attendance", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "בקשות", "url": "/requests", "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192" }] }
+  ]
+}
