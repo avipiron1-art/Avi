@@ -6,7 +6,9 @@ import { ah, badRequest, conflict, forbidden, notFound } from '../lib/errors.js'
 import { validate, z, zText, zOptText, zEmail, zPassword, zOptId, paramId } from '../lib/validate.js';
 import { requirePerm } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
-import { PERMISSIONS, permissionsForRole, setRolePermissions } from '../services/permissions.js';
+import {
+  PERMISSIONS, permissionsForRole, permissionsForUser, setRolePermissions, setUserPermissions, userOverrides,
+} from '../services/permissions.js';
 import { getSetting, loadSettings, updateSettings, DEFAULT_SETTINGS } from '../services/settings.js';
 
 const router = Router();
@@ -133,8 +135,40 @@ const USER_COLUMNS = `u.id, u.username, u.email, u.display_name, u.employee_id, 
 const getUser = (id) => getDb().prepare(`SELECT ${USER_COLUMNS} FROM users u JOIN roles r ON r.id = u.role_id LEFT JOIN employees e ON e.id = u.employee_id WHERE u.id = ?`).get(id);
 
 router.get('/users', requirePerm('users.manage'), (req, res) => {
-  res.json({ users: getDb().prepare(`SELECT ${USER_COLUMNS} FROM users u JOIN roles r ON r.id = u.role_id LEFT JOIN employees e ON e.id = u.employee_id ORDER BY r.id, u.display_name`).all() });
+  const users = getDb().prepare(`SELECT ${USER_COLUMNS} FROM users u JOIN roles r ON r.id = u.role_id LEFT JOIN employees e ON e.id = u.employee_id ORDER BY r.id, u.display_name`).all();
+  res.json({ users: users.map((u) => ({ ...u, custom_permissions: u.role === 'admin' ? 0 : Object.keys(userOverrides(u.id)).length })) });
 });
+
+// ---------- personal permissions ----------
+router.get('/users/:id/permissions', requirePerm('users.manage'), ah((req, res) => {
+  const u = getUser(paramId(req.params.id));
+  if (!u) throw notFound('המשתמש לא נמצא');
+  res.json({
+    user: { id: u.id, display_name: u.display_name, role: u.role, role_name: u.role_name },
+    locked: u.role === 'admin',
+    catalog: Object.entries(PERMISSIONS).map(([key, label]) => ({ key, label })),
+    role_permissions: [...permissionsForRole(u.role)],
+    effective: [...permissionsForUser(u.id, u.role)],
+  });
+}));
+
+router.put('/users/:id/permissions', requirePerm('users.manage'), ah((req, res) => {
+  const u = getUser(paramId(req.params.id));
+  if (!u) throw notFound('המשתמש לא נמצא');
+  if (u.role === 'admin') throw forbidden('למנהל ראשי יש תמיד את כל ההרשאות');
+  if (req.user.role !== 'admin' && u.id === req.user.id) throw forbidden('לא ניתן לשנות את ההרשאות של עצמך');
+  const { permissions } = validate(z.object({ permissions: z.array(z.enum(Object.keys(PERMISSIONS))) }), req.body);
+  const before = [...permissionsForUser(u.id, u.role)];
+  setUserPermissions(u.id, u.role, permissions);
+  const after = [...permissionsForUser(u.id, u.role)];
+  const label = (list) => list.map((p) => PERMISSIONS[p]);
+  audit(req, {
+    action: 'permissions.user_update', entityType: 'user', entityId: u.id,
+    description: `${req.user.display_name} עדכן/ה הרשאות אישיות למשתמש ${u.display_name}`,
+    oldValue: label(before), newValue: label(after),
+  });
+  res.json({ effective: after, message: 'ההרשאות האישיות נשמרו' });
+}));
 
 const userSchema = z.object({
   username: z.string().trim().min(3, 'לפחות 3 תווים').max(40).regex(/^[A-Za-z0-9._-]+$/, 'אותיות באנגלית, ספרות ו-._- בלבד'),
@@ -144,6 +178,12 @@ const userSchema = z.object({
   employee_id: zOptId,
   is_active: z.boolean().default(true),
 });
+
+/** Only a main admin may create, edit or manage main-admin accounts (protects against delegated users.manage). */
+function guardAdminTarget(req, target, newRole) {
+  if (req.user.role === 'admin') return;
+  if (target?.role === 'admin' || newRole === 'admin') throw forbidden('רק מנהל ראשי יכול לנהל חשבונות של מנהלים ראשיים');
+}
 
 function checkUserUnique(data, exceptId = 0) {
   const db = getDb();
@@ -157,6 +197,7 @@ function checkUserUnique(data, exceptId = 0) {
 
 router.post('/users', requirePerm('users.manage'), ah(async (req, res) => {
   const data = validate(userSchema.extend({ password: zPassword }), req.body);
+  guardAdminTarget(req, null, data.role);
   checkUserUnique(data);
   const db = getDb();
   const roleId = db.prepare('SELECT id FROM roles WHERE key = ?').get(data.role).id;
@@ -173,6 +214,7 @@ router.put('/users/:id', requirePerm('users.manage'), ah((req, res) => {
   const before = getUser(id);
   if (!before) throw notFound('המשתמש לא נמצא');
   const data = validate(userSchema, req.body);
+  guardAdminTarget(req, before, data.role);
   if (id === req.user.id && (data.role !== 'admin' || !data.is_active)) throw forbidden('לא ניתן להסיר הרשאות ניהול או להשבית את המשתמש שלך');
   checkUserUnique(data, id);
   const db = getDb();
@@ -196,6 +238,7 @@ router.post('/users/:id/password', requirePerm('users.manage'), ah(async (req, r
   const id = paramId(req.params.id);
   const u = getUser(id);
   if (!u) throw notFound('המשתמש לא נמצא');
+  guardAdminTarget(req, u);
   const { password } = validate(z.object({ password: zPassword }), req.body);
   const db = getDb();
   db.prepare("UPDATE users SET password_hash = ?, failed_attempts = 0, locked_until = NULL, updated_at = datetime('now') WHERE id = ?").run(await bcrypt.hash(password, 12), id);
@@ -209,6 +252,7 @@ router.delete('/users/:id', requirePerm('users.manage'), ah((req, res) => {
   if (id === req.user.id) throw forbidden('לא ניתן למחוק את המשתמש שלך');
   const u = getUser(id);
   if (!u) throw notFound('המשתמש לא נמצא');
+  guardAdminTarget(req, u);
   getDb().prepare('DELETE FROM users WHERE id = ?').run(id);
   audit(req, { action: 'user.delete', entityType: 'user', entityId: id, description: `${req.user.display_name} מחק/ה את המשתמש ${u.display_name}`, oldValue: u });
   res.json({ message: 'המשתמש נמחק' });

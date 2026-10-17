@@ -13,6 +13,7 @@ import Attendance from './pages/Attendance.jsx';
 import Tasks from './pages/Tasks.jsx';
 import Requests from './pages/Requests.jsx';
 import Availability from './pages/Availability.jsx';
+import Schedule from './pages/Schedule.jsx';
 import Reports from './pages/Reports.jsx';
 import Notifications from './pages/Notifications.jsx';
 import SettingsPage from './pages/Settings.jsx';
@@ -55,6 +56,7 @@ export default function App() {
         <Route path="attendance" element={<Attendance />} />
         <Route path="tasks" element={<Tasks />} />
         <Route path="requests" element={<Requests />} />
+        <Route path="schedule" element={<Schedule />} />
         <Route path="availability" element={<Guard employee><Availability /></Guard>} />
         <Route path="reports" element={<Guard perm={['reports.view']}><Reports /></Guard>} />
         <Route path="notifications" element={<Notifications />} />

@@ -46,6 +46,7 @@ function ShiftChip({ s, canEdit, onOpen, onDragStart, onDragEnd, dragging }) {
     >
       <div className="t">{shiftRange(s)}</div>
       <div className="n">{s.employee_name}</div>
+      {!!s.is_lead && <span className="lead-badge chip-lead">אחמ״ש</span>}
       <div className="p">{[s.position_name, s.location_name].filter(Boolean).join(' · ')}</div>
     </div>
   );
@@ -59,7 +60,7 @@ function ShiftDetails({ shift, onClose }) {
       <div className="info-list mt">
         <div><div className="k">תאריך</div><div className="v">{longDate(shift.start_at)}</div></div>
         <div><div className="k">שעות</div><div className="v ltr">{shiftRange(shift)}</div></div>
-        <div><div className="k">תפקיד</div><div className="v">{shift.position_name || '—'}</div></div>
+        <div><div className="k">תפקיד</div><div className="v">{shift.position_name || '—'}{!!shift.is_lead && <> · אחמ״ש</>}</div></div>
         <div><div className="k">מיקום</div><div className="v">{shift.location_name || '—'}</div></div>
         <div><div className="k">נוכחות</div><div className="v"><StatusBadge map={ATTENDANCE_STATUS} value={shift.attendance_status} /></div></div>
         {shift.clock_in_at && <div><div className="k">כניסה / יציאה בפועל</div><div className="v ltr">{time(shift.clock_in_at)}–{time(shift.clock_out_at)}</div></div>}

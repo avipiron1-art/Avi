@@ -186,7 +186,7 @@ function EmployeeDashboard({ data, reload }) {
           <div className="grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
             <Link to="/requests?new=vacation" className="btn btn-lg">בקשת חופשה</Link>
             <Link to="/requests?new=shift_swap" className="btn btn-lg">החלפת משמרת</Link>
-            <Link to="/availability" className="btn btn-lg">דיווח זמינות</Link>
+            <Link to="/schedule?tab=submit" className="btn btn-lg">הגשת זמינות</Link>
             <Link to="/attendance" className="btn btn-lg">השעות שלי</Link>
           </div>
         </Card>

@@ -18,6 +18,7 @@ import notificationRoutes from './routes/notifications.js';
 import reportRoutes from './routes/reports.js';
 import searchRoutes from './routes/search.js';
 import adminRoutes from './routes/admin.js';
+import scheduleRoutes from './routes/schedule.js';
 import { seedIfEmpty } from './db/seed.js';
 import { startJobs } from './services/jobs.js';
 
@@ -58,6 +59,7 @@ export function createApp() {
   api.use('/notifications', notificationRoutes);
   api.use('/reports', requirePerm('reports.view'), reportRoutes);
   api.use('/search', searchRoutes);
+  api.use('/schedule', scheduleRoutes);
   api.use('/', adminRoutes);
   api.use((req, res) => res.status(404).json({ error: 'הכתובת המבוקשת לא נמצאה' }));
   app.use('/api', api);
