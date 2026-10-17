@@ -8,7 +8,7 @@ import { localToday } from '../lib/format.js';
 
 const EMPTY = {
   employee_code: '', first_name: '', last_name: '', phone: '', email: '', position_id: '', department_id: '', location_id: '',
-  start_date: localToday(), status: 'active', hourly_wage: '', avatar: null,
+  start_date: localToday(), status: 'active', hourly_wage: '', avatar: null, can_lead: false, national_id: '',
 };
 
 /** Resize the selected image client-side to a small square JPEG data URL. */
@@ -49,7 +49,7 @@ export default function EmployeeForm({ open, onClose, employee, onSaved, onDelet
       onDeleted?.(employee);
     } catch (e) { toast.error(e); } finally { setDeleting(false); }
   };
-  const init = employee ? Object.fromEntries(Object.keys(EMPTY).map((k) => [k, employee[k] ?? ''])) : EMPTY;
+  const init = employee ? { ...Object.fromEntries(Object.keys(EMPTY).map((k) => [k, employee[k] ?? ''])), can_lead: !!employee.can_lead } : EMPTY;
   const { values: v, set, setValues, errors, setErrors } = useForm({ ...init, avatar: employee?.avatar || null });
 
   const onFile = async (e) => {
@@ -128,6 +128,8 @@ export default function EmployeeForm({ open, onClose, employee, onSaved, onDelet
           <Field label="סטטוס">
             <Select value={v.status} onChange={set('status')}><option value="active">פעיל</option><option value="vacation">בחופשה</option><option value="inactive">לא פעיל</option></Select>
           </Field>
+          <Field label="מספר זהות" error={errors.national_id} hint="לדוח החודשי לרואה החשבון"><Input value={v.national_id} onChange={set('national_id')} invalid={errors.national_id} dir="ltr" inputMode="numeric" maxLength={9} /></Field>
+          <div className="field"><label>&nbsp;</label><label className="checkbox"><input type="checkbox" checked={!!v.can_lead} onChange={set('can_lead')} />יכול/ה לשמש אחמ״ש</label></div>
           {can('employees.wage') && (
             <Field label={`שכר שעתי (${meta.settings.currency})`} error={errors.hourly_wage}><Input type="number" min="0" step="0.5" value={v.hourly_wage} onChange={set('hourly_wage')} invalid={errors.hourly_wage} /></Field>
           )}

@@ -9,7 +9,7 @@ import { audit } from '../services/audit.js';
 import {
   PERMISSIONS, permissionsForRole, permissionsForUser, setRolePermissions, setUserPermissions, userOverrides,
 } from '../services/permissions.js';
-import { getSetting, loadSettings, updateSettings, DEFAULT_SETTINGS } from '../services/settings.js';
+import { getSetting, loadSettings, updateSettings, DEFAULT_SETTINGS, SECRET_SETTINGS } from '../services/settings.js';
 
 const router = Router();
 
@@ -24,12 +24,15 @@ router.get('/meta', (req, res) => {
     locations: db.prepare('SELECT * FROM locations ORDER BY name').all(),
     roles: db.prepare('SELECT id, key, name, description FROM roles ORDER BY id').all(),
     employees: req.can('employees.view') || req.can('shifts.view_all') || req.can('tasks.manage')
-      ? db.prepare("SELECT id, first_name || ' ' || last_name AS name, status, avatar, department_id, position_id FROM employees ORDER BY first_name").all()
+      ? db.prepare(`SELECT id, first_name || ' ' || last_name AS name, status, avatar, department_id, position_id, location_id FROM employees
+          ${req.user.location_id ? 'WHERE location_id = ? OR location_id IS NULL OR id = ?' : ''} ORDER BY first_name`).all(...(req.user.location_id ? [req.user.location_id, req.user.employee_id || -1] : []))
       // regular employees get a minimal colleague list (for shift-swap requests)
       : db.prepare("SELECT id, first_name || ' ' || last_name AS name FROM employees WHERE status = 'active' ORDER BY first_name").all(),
     settings: {
       business_name: getSetting('business_name'), currency: getSetting('currency'),
       late_grace_minutes: Number(getSetting('late_grace_minutes')), overtime_daily_hours: Number(getSetting('overtime_daily_hours')),
+      brand_color: getSetting('brand_color'), logo: getSetting('logo') || null,
+      vapid_public: getSetting('vapid_public') || null,
     },
   });
 });
@@ -43,8 +46,14 @@ const REF = {
   positions: { label: 'תפקיד', schema: z.object({ name: zText(80), department_id: zOptId }), cols: ['name', 'department_id'] },
   locations: {
     label: 'מיקום',
-    schema: z.object({ name: zText(80), address: zOptText(200), is_active: z.boolean().default(true).transform((b) => (b ? 1 : 0)) }),
-    cols: ['name', 'address', 'is_active'],
+    schema: z.object({
+      name: zText(80), address: zOptText(200), is_active: z.boolean().default(true).transform((b) => (b ? 1 : 0)),
+      latitude: z.union([z.coerce.number().min(-90).max(90), z.literal(''), z.null()]).optional().transform((v) => (v === '' || v == null ? null : v)),
+      longitude: z.union([z.coerce.number().min(-180).max(180), z.literal(''), z.null()]).optional().transform((v) => (v === '' || v == null ? null : v)),
+      radius_m: z.coerce.number().int().min(30, 'רדיוס מינימלי 30 מ׳').max(5000).default(150),
+      require_location: z.boolean().default(false).transform((b) => (b ? 1 : 0)),
+    }).refine((d) => !d.require_location || (d.latitude != null && d.longitude != null), { message: 'כדי לחייב החתמה לפי מיקום יש להגדיר קואורדינטות', path: ['latitude'] }),
+    cols: ['name', 'address', 'is_active', 'latitude', 'longitude', 'radius_m', 'require_location'],
   },
 };
 
@@ -94,9 +103,23 @@ const settingsSchema = z.object({
   overtime_daily_hours: z.coerce.number().min(1).max(16),
   currency: zText(5),
   task_due_soon_days: z.coerce.number().int().min(0).max(30),
+  brand_color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'צבע לא תקין').optional(),
+  logo: z.union([
+    z.string().max(400_000, 'הלוגו גדול מדי (עד 300KB)').regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/, 'קובץ תמונה לא נתמך'),
+    z.literal(''),
+  ]).optional(),
+  ot_tier1_hours: z.coerce.number().min(0).max(12).optional(),
+  rate_ot1: z.coerce.number().min(1).max(3).optional(),
+  rate_ot2: z.coerce.number().min(1).max(3).optional(),
+  rate_rest_day: z.coerce.number().min(1).max(3).optional(),
+  rest_day: z.coerce.number().int().min(0).max(6).optional(),
+  shift_end_reminder_minutes: z.coerce.number().int().min(0).max(240).optional(),
+  backup_keep: z.coerce.number().int().min(1).max(365).optional(),
 });
 
-router.get('/settings', requirePerm('settings.manage'), (req, res) => res.json({ settings: loadSettings() }));
+const publicSettings = () => Object.fromEntries(Object.entries(loadSettings()).filter(([k]) => !SECRET_SETTINGS.includes(k) && !k.startsWith('gdrive_') && !k.startsWith('vapid_')));
+
+router.get('/settings', requirePerm('settings.manage'), (req, res) => res.json({ settings: publicSettings() }));
 
 router.put('/settings', requirePerm('settings.manage'), ah((req, res) => {
   const data = validate(settingsSchema, req.body);
@@ -105,9 +128,10 @@ router.put('/settings', requirePerm('settings.manage'), ah((req, res) => {
   const changed = Object.keys(DEFAULT_SETTINGS).filter((k) => String(before[k]) !== String(after[k]));
   if (changed.length) {
     audit(req, { action: 'settings.update', entityType: 'settings', description: `${req.user.display_name} עדכן/ה הגדרות מערכת`,
-      oldValue: Object.fromEntries(changed.map((k) => [k, before[k]])), newValue: Object.fromEntries(changed.map((k) => [k, after[k]])) });
+      oldValue: Object.fromEntries(changed.map((k) => [k, k === 'logo' ? (before[k] ? '(תמונה)' : '') : before[k]])),
+      newValue: Object.fromEntries(changed.map((k) => [k, k === 'logo' ? (after[k] ? '(תמונה)' : '') : after[k]])) });
   }
-  res.json({ settings: after, message: 'ההגדרות נשמרו בהצלחה' });
+  res.json({ settings: publicSettings(), message: 'ההגדרות נשמרו בהצלחה' });
 }));
 
 // =========================== permissions ===========================
@@ -131,11 +155,13 @@ router.put('/permissions/:role', requirePerm('users.manage'), ah((req, res) => {
 
 // =========================== users ===========================
 const USER_COLUMNS = `u.id, u.username, u.email, u.display_name, u.employee_id, u.is_active, u.last_login_at, u.created_at,
+  u.location_id, ul.name AS location_name, u.totp_enabled, (SELECT COUNT(*) FROM webauthn_credentials w WHERE w.user_id = u.id) AS passkeys,
   r.key AS role, r.name AS role_name, e.first_name || ' ' || e.last_name AS employee_name`;
-const getUser = (id) => getDb().prepare(`SELECT ${USER_COLUMNS} FROM users u JOIN roles r ON r.id = u.role_id LEFT JOIN employees e ON e.id = u.employee_id WHERE u.id = ?`).get(id);
+const USER_JOINS = 'JOIN roles r ON r.id = u.role_id LEFT JOIN employees e ON e.id = u.employee_id LEFT JOIN locations ul ON ul.id = u.location_id';
+const getUser = (id) => getDb().prepare(`SELECT ${USER_COLUMNS} FROM users u ${USER_JOINS} WHERE u.id = ?`).get(id);
 
 router.get('/users', requirePerm('users.manage'), (req, res) => {
-  const users = getDb().prepare(`SELECT ${USER_COLUMNS} FROM users u JOIN roles r ON r.id = u.role_id LEFT JOIN employees e ON e.id = u.employee_id ORDER BY r.id, u.display_name`).all();
+  const users = getDb().prepare(`SELECT ${USER_COLUMNS} FROM users u ${USER_JOINS} ORDER BY r.id, u.display_name`).all();
   res.json({ users: users.map((u) => ({ ...u, custom_permissions: u.role === 'admin' ? 0 : Object.keys(userOverrides(u.id)).length })) });
 });
 
@@ -176,12 +202,14 @@ const userSchema = z.object({
   display_name: zText(80),
   role: z.enum(['admin', 'shift_manager', 'employee']),
   employee_id: zOptId,
+  location_id: zOptId, // branch manager: sees and manages only this branch (empty = all branches)
   is_active: z.boolean().default(true),
 });
 
 /** Only a main admin may create, edit or manage main-admin accounts (protects against delegated users.manage). */
 function guardAdminTarget(req, target, newRole) {
   if (req.user.role === 'admin') return;
+  if (req.user.location_id && target && target.location_id !== req.user.location_id) throw forbidden('המשתמש שייך לסניף אחר');
   if (target?.role === 'admin' || newRole === 'admin') throw forbidden('רק מנהל ראשי יכול לנהל חשבונות של מנהלים ראשיים');
 }
 
@@ -202,8 +230,9 @@ router.post('/users', requirePerm('users.manage'), ah(async (req, res) => {
   const db = getDb();
   const roleId = db.prepare('SELECT id FROM roles WHERE key = ?').get(data.role).id;
   const hash = await bcrypt.hash(data.password, 12);
-  const id = db.prepare('INSERT INTO users (username, email, display_name, password_hash, role_id, employee_id, is_active) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(data.username, data.email, data.display_name, hash, roleId, data.employee_id, data.is_active ? 1 : 0).lastInsertRowid;
+  if (req.user.location_id) data.location_id = req.user.location_id; // a branch manager can only create users in their branch
+  const id = db.prepare('INSERT INTO users (username, email, display_name, password_hash, role_id, employee_id, is_active, location_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(data.username, data.email, data.display_name, hash, roleId, data.employee_id, data.is_active ? 1 : 0, data.role === 'admin' ? null : data.location_id).lastInsertRowid;
   const { password, ...logged } = data;
   audit(req, { action: 'user.create', entityType: 'user', entityId: id, description: `${req.user.display_name} יצר/ה משתמש ${data.display_name} (${data.role})`, newValue: logged });
   res.status(201).json({ user: getUser(id), message: 'המשתמש נוצר בהצלחה' });
@@ -219,8 +248,10 @@ router.put('/users/:id', requirePerm('users.manage'), ah((req, res) => {
   checkUserUnique(data, id);
   const db = getDb();
   const roleId = db.prepare('SELECT id FROM roles WHERE key = ?').get(data.role).id;
-  db.prepare("UPDATE users SET username=?, email=?, display_name=?, role_id=?, employee_id=?, is_active=?, updated_at=datetime('now') WHERE id=?")
-    .run(data.username, data.email, data.display_name, roleId, data.employee_id, data.is_active ? 1 : 0, id);
+  if (req.user.location_id) data.location_id = req.user.location_id;
+  if (data.role === 'admin') data.location_id = null; // a main admin always sees every branch
+  db.prepare("UPDATE users SET username=?, email=?, display_name=?, role_id=?, employee_id=?, is_active=?, location_id=?, updated_at=datetime('now') WHERE id=?")
+    .run(data.username, data.email, data.display_name, roleId, data.employee_id, data.is_active ? 1 : 0, data.location_id, id);
   if (!data.is_active || before.role !== data.role) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
   const after = getUser(id);
   audit(req, {
@@ -228,8 +259,8 @@ router.put('/users/:id', requirePerm('users.manage'), ah((req, res) => {
     description: before.role !== data.role
       ? `${req.user.display_name} שינה/תה את ההרשאה של ${after.display_name} מ"${before.role_name}" ל"${after.role_name}"`
       : `${req.user.display_name} עדכן/ה את המשתמש ${after.display_name}`,
-    oldValue: { username: before.username, email: before.email, role: before.role, employee_id: before.employee_id, is_active: !!before.is_active },
-    newValue: { username: data.username, email: data.email, role: data.role, employee_id: data.employee_id, is_active: data.is_active },
+    oldValue: { username: before.username, email: before.email, role: before.role, employee_id: before.employee_id, is_active: !!before.is_active, location_id: before.location_id },
+    newValue: { username: data.username, email: data.email, role: data.role, employee_id: data.employee_id, is_active: data.is_active, location_id: data.location_id },
   });
   res.json({ user: after, message: 'המשתמש עודכן בהצלחה' });
 }));
@@ -245,6 +276,19 @@ router.post('/users/:id/password', requirePerm('users.manage'), ah(async (req, r
   db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
   audit(req, { action: 'user.password_set', entityType: 'user', entityId: id, description: `${req.user.display_name} הגדיר/ה סיסמה חדשה למשתמש ${u.display_name}` });
   res.json({ message: 'הסיסמה עודכנה. המשתמש נותק מכל המכשירים.' });
+}));
+
+// Lost phone: turn off two-step login and remove passkeys so the user can sign in with the password.
+router.post('/users/:id/reset-mfa', requirePerm('users.manage'), ah((req, res) => {
+  const id = paramId(req.params.id);
+  const u = getUser(id);
+  if (!u) throw notFound('המשתמש לא נמצא');
+  guardAdminTarget(req, u);
+  const db = getDb();
+  db.prepare('UPDATE users SET totp_enabled = 0, totp_secret = NULL, recovery_codes = NULL, totp_last_step = NULL WHERE id = ?').run(id);
+  db.prepare('DELETE FROM webauthn_credentials WHERE user_id = ?').run(id);
+  audit(req, { action: 'user.mfa_reset', entityType: 'user', entityId: id, description: `${req.user.display_name} איפס/ה אימות דו-שלבי וכניסה ביומטרית למשתמש ${u.display_name}` });
+  res.json({ message: 'האימות הדו-שלבי והכניסה הביומטרית אופסו' });
 }));
 
 router.delete('/users/:id', requirePerm('users.manage'), ah((req, res) => {

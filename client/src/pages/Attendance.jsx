@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import {
-  ChevronLeft, ChevronRight, Pencil, AlertTriangle, Clock, Users, UserCheck, UserX, CheckCircle2, Timer, Plus, ShieldAlert,
+  ChevronLeft, ChevronRight, Pencil, AlertTriangle, Clock, Users, UserCheck, UserX, CheckCircle2, Timer, Plus, ShieldAlert, Crown,
 } from 'lucide-react';
 import { useApi } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
@@ -74,6 +74,9 @@ function Board() {
 
   return (
     <>
+      {data?.lead_scope && (
+        <div className="alert tone-info mb"><Crown size={18} /><span>את/ה האחמ״ש במשמרת עכשיו (<span className="ltr">{time(data.lead_scope.from)}–{time(data.lead_scope.to)}</span>). אפשר לעדכן נוכחות ולדווח אירועים של המשמרת הזו בלבד.</span></div>
+      )}
       <div className="toolbar">
         <div className="flex">
           <IconButton icon={ChevronRight} label="יום קודם" onClick={() => setDate((d) => addDays(d, -1))} />
@@ -117,6 +120,7 @@ function Board() {
                           {r.late_minutes > 0 && <Badge tone="warning">איחור {r.late_minutes} דק׳</Badge>}
                           {r.early_leave_minutes > 0 && <Badge tone="warning">יציאה מוקדמת {r.early_leave_minutes} דק׳</Badge>}
                           {r.overtime_minutes > 0 && <Badge tone="info">+{duration(r.overtime_minutes)} נוספות</Badge>}
+                          {r.clock_in_distance_m != null && <Badge tone={r.clock_in_distance_m > 300 ? 'warning' : 'neutral'}>📍 {r.clock_in_distance_m} מ׳ מהסניף</Badge>}
                           {r.attendance_note && <span className="subtle" title={r.attendance_note}>📝</span>}
                         </div>
                       </td>
@@ -223,7 +227,7 @@ export default function Attendance() {
     ...(user.employee_id ? [{ value: 'mine', label: 'השעון שלי' }] : []),
     ...(showIncidents ? [{ value: 'incidents', label: 'אירועים' }] : []),
   ];
-  const [tab, setTab] = useState(tabs[0]?.value);
+  const [tab, setTab] = useState(user.lead_scope && user.employee_id ? 'mine' : tabs[0]?.value);
   if (!tabs.length) return <div className="card"><EmptyState title="אין נתוני נוכחות להצגה" /></div>;
   return (
     <>

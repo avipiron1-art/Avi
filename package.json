@@ -17,6 +17,8 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@hebcal/core": "^6.14.4",
+    "@simplewebauthn/server": "^14.0.3",
     "bcryptjs": "^2.4.3",
     "better-sqlite3": "^11.7.0",
     "cookie-parser": "^1.4.7",
@@ -24,9 +26,12 @@
     "express": "^4.22.3",
     "express-rate-limit": "^7.4.1",
     "helmet": "^8.0.0",
+    "qrcode": "^1.5.4",
+    "web-push": "^3.6.7",
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@simplewebauthn/browser": "^14.0.0",
     "@vitejs/plugin-react": "^4.7.0",
     "concurrently": "^9.1.0",
     "lucide-react": "^0.460.0",

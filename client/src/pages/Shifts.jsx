@@ -3,12 +3,13 @@ import { useSearchParams } from 'react-router';
 import {
   ChevronRight, ChevronLeft, Plus, CopyPlus, CalendarDays, CalendarRange, Calendar, MapPin, Clock, StickyNote,
 } from 'lucide-react';
-import { useApi, useMediaQuery } from '../lib/hooks.js';
+import { useApi, useHolidays, useMediaQuery } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import { useToast } from '../lib/toast.jsx';
 import {
   Badge, Button, EmptyState, ErrorState, IconButton, Modal, PageHeader, Person, Segmented, Select, SkeletonRows, StatusBadge, useConfirm,
+  HolidayTags,
 } from '../components/ui.jsx';
 import ShiftForm, { useConflictSave } from '../components/ShiftForm.jsx';
 import {
@@ -164,6 +165,7 @@ export default function Shifts() {
     });
   };
 
+  const hol = useHolidays(from, to);
   const days = view === 'week' ? Array.from({ length: 7 }, (_, i) => addDays(startOfWeek(anchor), i)) : [];
   const monthDays = view === 'month' ? (() => { const out = []; for (let d = from; d <= to; d = addDays(d, 1)) out.push(d); return out; })() : [];
 
@@ -184,7 +186,7 @@ export default function Shifts() {
           <Button size="sm" onClick={() => setAnchor(today)}>היום</Button>
           <IconButton icon={ChevronLeft} label="הבא" onClick={() => move(1)} />
         </div>
-        <div className="cal-title">{titleFor(view, anchor)}</div>
+        <div className="cal-title">{titleFor(view, anchor)}{view === 'day' && <> <HolidayTags list={hol.get(anchor)} /></>}</div>
         <div style={{ marginInlineStart: 'auto' }} className="flex flex-wrap">
           {viewAll && (
             <>
@@ -214,6 +216,7 @@ export default function Shifts() {
                       <div className="cal-day-head">
                         <div className="dname">{dayName(d)}</div>
                         <div className="dnum">{Number(d.slice(8, 10))}</div>
+                        <HolidayTags list={hol.get(d)} compact />
                         {isMobile && <Badge>{list.length} משמרות</Badge>}
                       </div>
                       <div className={`cal-day-body ${dropDay === d ? 'drop-target' : ''}`} {...dropProps(d)}>
@@ -239,7 +242,8 @@ export default function Shifts() {
                   return (
                     <div key={d} className={`cal-cell ${other ? 'other' : ''} ${d === today ? 'today' : ''} ${dropDay === d ? 'drop-target' : ''}`}
                       onClick={() => { setAnchor(d); setView('day'); }} {...dropProps(d)}>
-                      <div className="flex between"><span className="cnum">{Number(d.slice(8, 10))}</span>{list.length > 0 && <span className="badge tone-primary count" style={{ display: 'none' }}>{list.length}</span>}</div>
+                      <div className="flex between"><span className="cnum">{Number(d.slice(8, 10))}</span></div>
+                      <HolidayTags list={hol.get(d)} compact />
                       {list.slice(0, 3).map((s) => (
                         <div key={s.id} className="cal-mini" style={{ '--chip': s.department_color }} draggable={canEdit}
                           onDragStart={(e) => { e.stopPropagation(); e.dataTransfer.setData('text/plain', String(s.id)); setDragged(s); }}

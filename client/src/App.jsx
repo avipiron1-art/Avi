@@ -14,7 +14,10 @@ import Tasks from './pages/Tasks.jsx';
 import Requests from './pages/Requests.jsx';
 import Availability from './pages/Availability.jsx';
 import Schedule from './pages/Schedule.jsx';
+import Join from './pages/Join.jsx';
 import Reports from './pages/Reports.jsx';
+import MyHours from './pages/MyHours.jsx';
+import Announcements from './pages/Announcements.jsx';
 import Notifications from './pages/Notifications.jsx';
 import SettingsPage from './pages/Settings.jsx';
 
@@ -39,6 +42,7 @@ export default function App() {
         <Route path="/login" element={<Login />} />
         <Route path="/forgot-password" element={<ForgotPassword />} />
         <Route path="/reset-password" element={<ResetPassword />} />
+        <Route path="/join/:token" element={<Join />} />
         <Route path="*" element={<Navigate to="/login" replace state={{ from: location.pathname + location.search }} />} />
       </Routes>
     );
@@ -48,6 +52,7 @@ export default function App() {
     <Routes>
       <Route path="/login" element={<Navigate to={location.state?.from || '/'} replace />} />
       <Route path="/reset-password" element={<ResetPassword />} />
+      <Route path="/join/:token" element={<Join />} />
       <Route element={<Layout />}>
         <Route index element={<Dashboard />} />
         <Route path="employees" element={<Guard perm={['employees.view']}><Employees /></Guard>} />
@@ -59,6 +64,8 @@ export default function App() {
         <Route path="schedule" element={<Schedule />} />
         <Route path="availability" element={<Guard employee><Availability /></Guard>} />
         <Route path="reports" element={<Guard perm={['reports.view']}><Reports /></Guard>} />
+        <Route path="my-hours" element={<MyHours />} />
+        <Route path="announcements" element={<Announcements />} />
         <Route path="notifications" element={<Notifications />} />
         <Route path="settings" element={<SettingsPage />} />
         <Route path="*" element={<div className="card"><EmptyState title="העמוד לא נמצא" text="ייתכן שהקישור שגוי או שהעמוד הוסר." action={<a className="btn btn-primary" href="/">חזרה לדף הבית</a>} /></div>} />

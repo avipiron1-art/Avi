@@ -39,3 +39,23 @@ export function useMediaQuery(q) {
   }, [q]);
   return m;
 }
+
+const holidayCache = new Map();
+/** Jewish/Israeli holidays between two dates → Map(date → [{ name, kind, paid }]). Cached per range. */
+export function useHolidays(from, to) {
+  const key = from && to ? `${from}|${to}` : null;
+  const [map, setMap] = useState(() => (key && holidayCache.get(key)) || new Map());
+  useEffect(() => {
+    if (!key) return undefined;
+    if (holidayCache.has(key)) { setMap(holidayCache.get(key)); return undefined; }
+    let alive = true;
+    api.get('/calendar/holidays', { from, to }).then((r) => {
+      const m = new Map();
+      for (const h of r.holidays) m.set(h.date, [...(m.get(h.date) || []), h]);
+      holidayCache.set(key, m);
+      if (alive) setMap(m);
+    }).catch(() => {});
+    return () => { alive = false; };
+  }, [key, from, to]);
+  return map;
+}

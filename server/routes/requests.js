@@ -26,7 +26,10 @@ router.get('/', (req, res) => {
   if (!req.can('requests.review')) {
     if (!req.user.employee_id) return res.json({ requests: [] });
     where.push('rq.employee_id = @own'); p.own = req.user.employee_id;
-  } else if (employee_id) { where.push('rq.employee_id = @employee_id'); p.employee_id = Number(employee_id); }
+  } else {
+    if (employee_id) { where.push('rq.employee_id = @employee_id'); p.employee_id = Number(employee_id); }
+    if (req.user.location_id) { where.push('(e.location_id = @scope_loc OR rq.employee_id = @self)'); p.scope_loc = req.user.location_id; p.self = req.user.employee_id || -1; }
+  }
   if (status && STATUS_LABEL[status]) { where.push('rq.status = @status'); p.status = status; }
   if (type && REQUEST_TYPE_LABEL[type]) { where.push('rq.type = @type'); p.type = type; }
   const requests = getDb().prepare(

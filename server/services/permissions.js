@@ -13,6 +13,7 @@ export const PERMISSIONS = {
   'attendance.manage': 'עדכון נוכחות עובדים',
   'incidents.report': 'דיווח על אירועים',
   'tasks.manage': 'ניהול משימות',
+  'announcements.manage': 'פרסום הודעות לעובדים',
   'requests.review': 'אישור ודחיית בקשות',
   'reports.view': 'צפייה בדוחות וייצוא',
   'settings.manage': 'ניהול הגדרות מערכת',
@@ -24,7 +25,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
   admin: Object.keys(PERMISSIONS),
   shift_manager: [
     'employees.view', 'employees.notes', 'shifts.view_all', 'attendance.manage',
-    'incidents.report', 'tasks.manage',
+    'incidents.report', 'tasks.manage', 'announcements.manage',
   ],
   employee: [],
 };

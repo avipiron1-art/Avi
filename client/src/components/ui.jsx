@@ -99,25 +99,27 @@ export function PageHeader({ title, subtitle, actions }) {
 }
 
 // ---------- Modal ----------
-export function Modal({ open, onClose, title, children, footer, wide, className = '' }) {
+export function Modal({ open, onClose, title, children, footer, wide, className = '', locked = false }) {
+  // locked: no close button, Escape or backdrop click (used for must-confirm messages)
+  const close = locked ? undefined : onClose;
   const ref = useRef(null);
   useEffect(() => {
     if (!open) return undefined;
-    const onKey = (e) => { if (e.key === 'Escape') onClose?.(); };
+    const onKey = (e) => { if (e.key === 'Escape') close?.(); };
     document.addEventListener('keydown', onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     setTimeout(() => ref.current?.querySelector('input:not([type=hidden]):not([type=checkbox]), select, textarea')?.focus(), 30);
     return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = prev; };
-  }, [open, onClose]);
+  }, [open, close]);
   if (!open) return null;
   return (
-    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose?.(); }}>
+    <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) close?.(); }}>
       <div className={`modal ${wide ? 'wide' : ''} ${className}`} role="dialog" aria-modal="true" aria-label={title} ref={ref}>
         {title && (
           <div className="modal-header">
             <h2>{title}</h2>
-            <IconButton icon={X} label="סגירה" onClick={onClose} small />
+            {!locked && <IconButton icon={X} label="סגירה" onClick={onClose} small />}
           </div>
         )}
         <div className="modal-body">{children}</div>
@@ -278,4 +280,14 @@ export function useForm(initial) {
     if (errors[k]) setErrors((s) => ({ ...s, [k]: undefined }));
   };
   return { values, setValues, errors, setErrors, set };
+}
+
+/** Small holiday label for calendar day headers. */
+export function HolidayTags({ list, compact }) {
+  if (!list?.length) return null;
+  return (
+    <span className={`holiday-tags ${compact ? 'compact' : ''}`}>
+      {list.map((h) => <span key={h.name} className={`holiday-tag kind-${h.kind}`} title={h.name}>{h.name}</span>)}
+    </span>
+  );
 }

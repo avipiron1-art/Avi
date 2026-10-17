@@ -1,6 +1,6 @@
 // Shiftly service worker: makes the app installable, speeds up loading, and shows a friendly
 // offline screen. API calls are never cached – data always comes live from the server.
-const VERSION = 'shiftly-v1';
+const VERSION = 'shiftly-v2';
 const OFFLINE_URL = '/offline.html';
 
 self.addEventListener('install', (event) => {
@@ -35,4 +35,34 @@ self.addEventListener('fetch', (event) => {
       })),
     );
   }
+});
+
+// ---------- push notifications ----------
+self.addEventListener('push', (event) => {
+  let data = {};
+  try { data = event.data ? event.data.json() : {}; } catch { data = { title: event.data && event.data.text() }; }
+  const title = data.title || 'Shiftly';
+  event.waitUntil(self.registration.showNotification(title, {
+    body: data.body || '',
+    icon: '/icons/icon-192.png',
+    badge: '/icons/icon-192.png',
+    dir: 'rtl',
+    lang: 'he',
+    tag: data.tag || undefined,
+    renotify: !!data.tag,
+    requireInteraction: !!data.urgent,
+    data: { url: data.url || '/' },
+  }));
+});
+
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  const url = new URL(event.notification.data?.url || '/', self.location.origin).href;
+  event.waitUntil((async () => {
+    const all = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+    for (const c of all) {
+      if (new URL(c.url).origin === self.location.origin) { await c.focus(); if ('navigate' in c) await c.navigate(url); return; }
+    }
+    await self.clients.openWindow(url);
+  })());
 });

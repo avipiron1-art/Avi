@@ -1,17 +1,55 @@
 import { Router } from 'express';
 import { getDb } from '../db/index.js';
-import { ah, badRequest, notFound } from '../lib/errors.js';
-import { validate, z, zDate, zDateTime, zOptText, zOptId, paramId, zText } from '../lib/validate.js';
-import { requirePerm, requireEmployee } from '../middleware/auth.js';
+import { ah, badRequest, forbidden, notFound } from '../lib/errors.js';
+import { validate, z, zMonth, zDate, zDateTime, zOptText, zOptId, paramId, zText } from '../lib/validate.js';
+import { requirePerm, requireEmployee, scopeSql } from '../middleware/auth.js';
 import { SHIFT_COLUMNS, SHIFT_JOINS } from '../lib/serialize.js';
 import { computeAttendance } from '../lib/attendance.js';
 import { addDays, addMinutes, nowLocal, todayLocal, hhmm } from '../lib/time.js';
 import { audit } from '../services/audit.js';
 import { notifyPermission } from '../services/notify.js';
 import { getShift } from './shifts.js';
+import { monthRange } from '../lib/time.js';
+import { buildPayroll } from '../services/payroll.js';
+import { payrollWorkbook, sendWorkbook, slipJson } from '../services/payrollExport.js';
 
 const router = Router();
 const EARLY_CLOCK_IN_MINUTES = 60;
+
+const geoSchema = z.object({
+  lat: z.coerce.number().min(-90).max(90).optional(),
+  lng: z.coerce.number().min(-180).max(180).optional(),
+  accuracy: z.coerce.number().min(0).max(100000).optional(),
+}).default({});
+
+/** Great-circle distance in metres. */
+export function distanceM(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const rad = (d) => (d * Math.PI) / 180;
+  const a = Math.sin(rad(lat2 - lat1) / 2) ** 2 + Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lng2 - lng1) / 2) ** 2;
+  return Math.round(2 * R * Math.asin(Math.sqrt(a)));
+}
+
+/**
+ * Location check for clock-in/out. The branch is the shift's location, else the employee's.
+ * Returns the distance (or null when it can't be measured). Throws when the branch requires
+ * location and the employee is clearly outside the allowed radius (GPS accuracy is forgiven up to 100 m).
+ */
+function checkLocation(shift, body) {
+  const db = getDb();
+  const locId = shift.location_id ?? db.prepare('SELECT location_id FROM employees WHERE id = ?').get(shift.employee_id)?.location_id;
+  const loc = locId ? db.prepare('SELECT * FROM locations WHERE id = ?').get(locId) : null;
+  const geo = validate(geoSchema, body || {});
+  const hasGeo = geo.lat != null && geo.lng != null;
+  const hasLoc = loc && loc.latitude != null && loc.longitude != null;
+  const dist = hasGeo && hasLoc ? distanceM(geo.lat, geo.lng, loc.latitude, loc.longitude) : null;
+  if (loc?.require_location && hasLoc) {
+    if (!hasGeo) throw badRequest(`ההחתמה בסניף ${loc.name} מחייבת שיתוף מיקום. אשר/י גישה למיקום בטלפון ונסה/י שוב.`, { code: 'location_required' });
+    const slack = Math.min(geo.accuracy || 0, 100);
+    if (dist > loc.radius_m + slack) throw badRequest(`נראה שאת/ה לא נמצא/ת בסניף ${loc.name} (מרחק ${dist} מ׳, מותר עד ${loc.radius_m} מ׳). יש להחתים מהסניף.`, { code: 'location_far' });
+  }
+  return dist;
+}
 
 const withAttendance = (rows, now = nowLocal()) => rows.map((s) => ({ ...s, ...computeAttendance(s, now) }));
 
@@ -34,11 +72,22 @@ router.get('/', requirePerm('attendance.manage'), ah((req, res) => {
   const params = { from: `${date}T00:00`, to: `${addDays(date, 1)}T00:00` };
   let extra = '';
   if (q.department_id) { extra = 'AND e.department_id = @dep'; params.dep = q.department_id; }
+  const scope = scopeSql(req);
   const rows = withAttendance(getDb().prepare(
     `SELECT ${SHIFT_COLUMNS} FROM shifts s ${SHIFT_JOINS}
-     WHERE s.status = 'scheduled' AND s.start_at >= @from AND s.start_at < @to ${extra} ORDER BY s.start_at, e.first_name`,
-  ).all(params));
-  res.json({ date, rows, summary: summarize(rows) });
+     WHERE s.status = 'scheduled' AND s.start_at >= @from AND s.start_at < @to ${extra} ${scope.sql} ORDER BY s.start_at, e.first_name`,
+  ).all({ ...params, ...scope.params }));
+  res.json({ date, rows, summary: summarize(rows), lead_scope: req.user.lead_scope || null });
+}));
+
+// ---------- my monthly hours slip (employee) ----------
+router.get('/me/slip', requireEmployee, ah(async (req, res) => {
+  const q = validate(z.object({ month: zMonth, format: z.enum(['xlsx', 'json']).default('json') }), req.query);
+  if (!q.month) q.month = todayLocal().slice(0, 7);
+  const { from, to } = monthRange(`${q.month}-01`);
+  const data = buildPayroll({ from, to, employee_id: req.user.employee_id });
+  if (q.format === 'xlsx') return sendWorkbook(res, await payrollWorkbook(data, { single: true, period: q.month }), `my_hours_${q.month}`);
+  res.json(slipJson(data));
 }));
 
 // ---------- my attendance (employee) ----------
@@ -72,6 +121,14 @@ router.get('/me', requireEmployee, (req, res) => {
   });
 });
 
+/** Branch managers and on-duty shift leads may only touch shifts inside their scope. */
+function assertInScope(req, shiftId) {
+  const scope = scopeSql(req);
+  if (!scope.sql) return;
+  const ok = getDb().prepare(`SELECT 1 FROM shifts s JOIN employees e ON e.id = s.employee_id WHERE s.id = @id ${scope.sql}`).get({ id: shiftId, ...scope.params });
+  if (!ok) throw forbidden(req.user.lead_scope ? 'כאחמ״ש אפשר לעדכן רק את המשמרת שלך' : 'המשמרת שייכת לסניף אחר');
+}
+
 function upsertAttendance(shiftId, fields, userId) {
   const db = getDb();
   const exists = db.prepare('SELECT id FROM attendance WHERE shift_id = ?').get(shiftId);
@@ -96,7 +153,8 @@ router.post('/clock-in', requireEmployee, ah((req, res) => {
        AND s.start_at <= ? AND s.end_at > ? ORDER BY s.start_at LIMIT 1`,
   ).get(req.user.employee_id, addMinutes(now, EARLY_CLOCK_IN_MINUTES), now);
   if (!shift) throw badRequest(`אין משמרת שניתן להתחיל כעת. ניתן להתחיל משמרת עד ${EARLY_CLOCK_IN_MINUTES} דקות לפני תחילתה.`);
-  upsertAttendance(shift.id, { clock_in_at: now }, req.user.id);
+  const dist = checkLocation(shift, req.body);
+  upsertAttendance(shift.id, { clock_in_at: now, clock_in_distance_m: dist }, req.user.id);
   const full = withAttendance([getShift(shift.id)], now)[0];
   audit(req, { action: 'attendance.clock_in', entityType: 'shift', entityId: shift.id, description: `${full.employee_name} נכנס/ה למשמרת ב-${hhmm(now)}${full.late_minutes ? ` (איחור של ${full.late_minutes} דק׳)` : ''}`, newValue: { clock_in_at: now } });
   if (full.late_minutes > 0) {
@@ -113,7 +171,8 @@ router.post('/clock-out', requireEmployee, ah((req, res) => {
      WHERE s.employee_id = ? AND a.clock_in_at IS NOT NULL AND a.clock_out_at IS NULL ORDER BY s.start_at DESC LIMIT 1`,
   ).get(req.user.employee_id);
   if (!shift) throw badRequest('לא נמצאה משמרת פתוחה לסיום');
-  upsertAttendance(shift.id, { clock_out_at: now }, req.user.id);
+  const dist = checkLocation(shift, req.body);
+  upsertAttendance(shift.id, { clock_out_at: now, clock_out_distance_m: dist }, req.user.id);
   const full = withAttendance([getShift(shift.id)], now)[0];
   const h = (full.worked_minutes / 60).toFixed(1);
   audit(req, { action: 'attendance.clock_out', entityType: 'shift', entityId: shift.id, description: `${full.employee_name} סיים/ה משמרת ב-${hhmm(now)} (${h} שעות)`, newValue: { clock_out_at: now } });
@@ -125,6 +184,7 @@ router.put('/:shiftId', requirePerm('attendance.manage'), ah((req, res) => {
   const shiftId = paramId(req.params.shiftId);
   const before = getShift(shiftId);
   if (!before) throw notFound('המשמרת לא נמצאה');
+  assertInScope(req, shiftId);
   const optDT = z.union([zDateTime, z.null(), z.literal('')]).optional().transform((v) => (v === '' || v == null ? null : v));
   const data = validate(z.object({
     clock_in_at: optDT, clock_out_at: optDT, marked_absent: z.boolean().optional().default(false), note: zOptText(500),

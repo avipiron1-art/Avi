@@ -19,8 +19,15 @@ import reportRoutes from './routes/reports.js';
 import searchRoutes from './routes/search.js';
 import adminRoutes from './routes/admin.js';
 import scheduleRoutes from './routes/schedule.js';
+import backupRoutes from './routes/backup.js';
+import calendarRoutes from './routes/calendar.js';
+import swapRoutes from './routes/swaps.js';
+import announcementRoutes from './routes/announcements.js';
+import { invitesRouter, joinRouter } from './routes/invites.js';
 import { seedIfEmpty } from './db/seed.js';
 import { startJobs } from './services/jobs.js';
+import { initPush } from './services/push.js';
+import { getSetting } from './services/settings.js';
 
 export function createApp() {
   const app = express();
@@ -47,8 +54,14 @@ export function createApp() {
 
   const api = express.Router();
   api.use((req, res, next) => { res.setHeader('Cache-Control', 'no-store'); next(); });
-  api.get('/health', (req, res) => res.json({ ok: true }));
+  // Health check for uptime monitoring: also proves the database answers.
+  api.get('/health', (req, res) => {
+    try { getDb().prepare('SELECT 1').get(); res.json({ ok: true }); } catch { res.status(503).json({ ok: false }); }
+  });
+  // Public branding (login page, installed app) – no secrets here.
+  api.get('/branding', (req, res) => res.json({ business_name: getSetting('business_name'), logo: getSetting('logo') || '', brand_color: getSetting('brand_color') || '' }));
   api.use('/auth', authRoutes); // login / forgot / reset are rate-limited and need no CSRF token
+  api.use('/join', joinRouter); // public: new employees sign up with an invite link
   api.use(requireAuth, csrf);
   api.use('/dashboard', dashboardRoutes);
   api.use('/employees', employeeRoutes);
@@ -60,6 +73,11 @@ export function createApp() {
   api.use('/reports', requirePerm('reports.view'), reportRoutes);
   api.use('/search', searchRoutes);
   api.use('/schedule', scheduleRoutes);
+  api.use('/backup', requirePerm('users.manage'), backupRoutes);
+  api.use('/invites', invitesRouter);
+  api.use('/calendar', calendarRoutes);
+  api.use('/swaps', swapRoutes);
+  api.use('/announcements', announcementRoutes);
   api.use('/', adminRoutes);
   api.use((req, res) => res.status(404).json({ error: 'הכתובת המבוקשת לא נמצאה' }));
   app.use('/api', api);
@@ -98,6 +116,7 @@ export function createApp() {
 if (process.argv[1] && path.resolve(process.argv[1]) === path.resolve(new URL(import.meta.url).pathname)) {
   getDb();
   seedIfEmpty();
+  initPush();
   startJobs();
   createApp().listen(config.port, () => {
     console.log(`✅ Shiftly running on http://localhost:${config.port}`);

@@ -40,6 +40,8 @@ export const zOptText = (max = 2000) =>
   z.union([trimmed(max), z.null()]).optional().transform((v) => (v === '' || v == null ? null : v));
 export const zDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'תאריך לא תקין')
   .refine((s) => !Number.isNaN(Date.parse(s)), 'תאריך לא תקין');
+/** 'YYYY-MM'; callers default a missing month to the current one. */
+export const zMonth = z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/, 'חודש לא תקין').optional();
 export const zTime = z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, 'שעה לא תקינה');
 export const zDateTime = z.string().regex(/^\d{4}-\d{2}-\d{2}T([01]\d|2[0-3]):[0-5]\d$/, 'מועד לא תקין');
 export const zId = z.coerce.number().int().positive();

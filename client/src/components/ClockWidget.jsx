@@ -5,6 +5,18 @@ import { useToast } from '../lib/toast.jsx';
 import { Button, Card, Skeleton, StatusBadge } from './ui.jsx';
 import { ATTENDANCE_STATUS, duration, longDate, shiftRange, time } from '../lib/format.js';
 
+/** Best-effort current position (never rejects; resolves null when unavailable or denied). */
+function getPosition() {
+  if (!navigator.geolocation) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    navigator.geolocation.getCurrentPosition(
+      (p) => resolve({ lat: p.coords.latitude, lng: p.coords.longitude, accuracy: Math.round(p.coords.accuracy) }),
+      () => resolve(null),
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 },
+    );
+  });
+}
+
 function useNow() {
   const [now, setNow] = useState(new Date());
   useEffect(() => { const t = setInterval(() => setNow(new Date()), 1000); return () => clearInterval(t); }, []);
@@ -23,7 +35,8 @@ export default function ClockWidget({ data, onChange }) {
   const act = async (kind) => {
     setBusy(true);
     try {
-      const r = await api.post(`/attendance/${kind}`);
+      const geo = await getPosition();
+      const r = await api.post(`/attendance/${kind}`, geo || {});
       toast.success(r.message);
       onChange?.();
     } catch (e) { toast.error(e); } finally { setBusy(false); }

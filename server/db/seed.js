@@ -261,6 +261,10 @@ export function seed(db = getDb(), { demo = true, adminPassword = DEMO_PASSWORDS
       }
     }
 
+    // ---------- staffing & shift leads (first-come picks demo) ----------
+    db.prepare("UPDATE shift_types SET required_workers = 4, required_leads = 1 WHERE is_active = 1").run();
+    for (const e of emps.filter((x) => x.role === 'shift_manager' || ['chef'].includes(x.posKey))) db.prepare('UPDATE employees SET can_lead = 1 WHERE id = ?').run(e.id);
+
     // ---------- shift preferences for next week (scheduling board demo) ----------
     const types = db.prepare('SELECT id FROM shift_types WHERE is_active = 1 ORDER BY sort_order, id').all();
     const nextWeek = addDays(today, 7 - weekday(today));

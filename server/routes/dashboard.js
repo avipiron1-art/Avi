@@ -9,7 +9,7 @@ const router = Router();
 const ACTIVITY_ACTIONS = ['attendance.clock_in', 'attendance.clock_out', 'attendance.update', 'shift.create', 'shift.update', 'shift.cancel',
   'shift.duplicate', 'shift.copy_week', 'request.create', 'request.approved', 'request.rejected', 'task.create', 'task.status', 'employee.create', 'incident.create'];
 
-function shiftsBetween(from, to, extraWhere = '', params = {}) {
+function shiftsBetweenAll(from, to, extraWhere = '', params = {}) {
   const now = nowLocal();
   return getDb().prepare(
     `SELECT ${SHIFT_COLUMNS} FROM shifts s ${SHIFT_JOINS}
@@ -26,6 +26,9 @@ const shiftBucket = (startAt) => {
 
 function managerDashboard(req) {
   const db = getDb();
+  // Branch manager: everything below is limited to their branch.
+  const loc = req.user.location_id || null;
+  const shiftsBetween = (from, to) => shiftsBetweenAll(from, to, loc ? 'AND COALESCE(s.location_id, e.location_id) = @loc' : '', loc ? { loc } : {});
   const now = nowLocal();
   const today = todayLocal();
   const { from: mFrom } = monthRange(today);
@@ -38,7 +41,7 @@ function managerDashboard(req) {
     .filter((s) => (s.start_at <= now && s.end_at > now) || (s.clock_in_at && !s.clock_out_at && s.end_at > now));
 
   const kpis = {
-    active_employees: db.prepare("SELECT COUNT(*) c FROM employees WHERE status = 'active'").get().c,
+    active_employees: db.prepare(`SELECT COUNT(*) c FROM employees WHERE status = 'active' ${loc ? 'AND location_id = ?' : ''}`).get(...(loc ? [loc] : [])).c,
     on_shift_now: current.filter((s) => s.attendance_status === 'on_shift').length,
     scheduled_now: current.length,
     today_employees: new Set(todays.map((s) => s.employee_id)).size,
@@ -92,7 +95,7 @@ function employeeDashboard(req) {
   const today = todayLocal();
   const empId = req.user.employee_id;
   const { from: mFrom } = monthRange(today);
-  const mine = shiftsBetween(`${addDays(mFrom, -160)}T00:00`, `${addDays(today, 30)}T00:00`, 'AND s.employee_id = @emp', { emp: empId });
+  const mine = shiftsBetweenAll(`${addDays(mFrom, -160)}T00:00`, `${addDays(today, 30)}T00:00`, 'AND s.employee_id = @emp', { emp: empId });
   const monthPast = mine.filter((s) => s.start_at >= `${mFrom}T00:00` && s.start_at <= now);
   const week = startOfWeek(today);
   const months = new Map();
