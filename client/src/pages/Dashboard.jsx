@@ -1,17 +1,20 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import {
   Users, UserCheck, CalendarDays, Clock, Inbox, ListTodo, Activity, CalendarClock, BarChart3, LogIn, LogOut,
-  CalendarPlus, CheckCircle2, XCircle, PencilLine, AlertTriangle, UserPlus, Coffee,
+  CalendarPlus, CheckCircle2, XCircle, PencilLine, AlertTriangle, UserPlus, Coffee, SlidersHorizontal,
 } from 'lucide-react';
 import { useApi } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
-  Card, KpiCard, PageHeader, Person, StatusBadge, EmptyState, ErrorState, SkeletonPage, Badge,
+  Button, Card, KpiCard, Modal, PageHeader, Person, Select, StatusBadge, EmptyState, ErrorState, SkeletonPage, Badge, Field,
 } from '../components/ui.jsx';
+import { NAV } from '../components/Layout.jsx';
+import { useToast } from '../lib/toast.jsx';
 import { HoursBar, HoursArea, StackedBar } from '../components/Charts.jsx';
 import ClockWidget from '../components/ClockWidget.jsx';
+import PushToggle from '../components/PushToggle.jsx';
 import {
   ATTENDANCE_STATUS, PRIORITY, TASK_STATUS, dayName, longDate, monthShort, shortDate, shiftRange, time, timeAgo,
 } from '../lib/format.js';
@@ -42,24 +45,79 @@ function ShiftRow({ s, showStatus = true, showDate }) {
   );
 }
 
+// Only redirect to the chosen main screen when the app was opened at its home (not from a link or notification).
+const LAUNCHED_AT_HOME = ['/', '/login'].includes(window.location.pathname);
+
+const WIDGETS = {
+  manager: [['kpis', 'מספרים עיקריים'], ['current', 'המשמרת הנוכחית'], ['activity', 'פעילות אחרונה'], ['upcoming', 'המשמרות הקרובות'], ['charts', 'גרפים']],
+  employee: [['clock', 'שעון נוכחות'], ['kpis', 'מספרים עיקריים'], ['upcoming', 'המשמרות הקרובות שלי'], ['tasks', 'המשימות שלי'], ['chart', 'השעות שלי לפי חודש'], ['quick', 'פעולות מהירות']],
+};
+
+/** "My main screen": the page that opens first + which blocks show here. */
+function Customize({ kind, onClose }) {
+  const { user, can, setPrefs } = useAuth();
+  const toast = useToast();
+  const [v, setV] = useState({ start: user.prefs?.start || '/', hidden: user.prefs?.hidden || [] });
+  const [saving, setSaving] = useState(false);
+  const pages = NAV.filter((n) => (!n.perm || can(...n.perm)) && (!n.employee || user.employee_id) && (!n.show || n.show(user, can)));
+  const toggle = (k) => setV((x) => ({ ...x, hidden: x.hidden.includes(k) ? x.hidden.filter((h) => h !== k) : [...x.hidden, k] }));
+  const save = async () => {
+    setSaving(true);
+    try { const r = await api.put('/auth/preferences', v); setPrefs(r.prefs); toast.success(r.message); onClose(); } catch (e) { toast.error(e); } finally { setSaving(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title="המסך הראשי שלי" footer={<><Button onClick={onClose}>ביטול</Button><Button variant="primary" loading={saving} onClick={save}>שמירה</Button></>}>
+      <div className="grid">
+        <Field label="איזה מסך ייפתח כשנכנסים לאפליקציה?">
+          <Select value={v.start} onChange={(e) => setV((x) => ({ ...x, start: e.target.value }))}>
+            {pages.map((n) => <option key={n.to} value={n.to}>{n.to === '/' ? 'דף הבית (המסך הזה)' : n.label}</option>)}
+          </Select>
+        </Field>
+        <div>
+          <div style={{ fontWeight: 600, marginBottom: 6 }}>מה להציג בדף הבית</div>
+          <div className="grid" style={{ gap: 8 }}>
+            {WIDGETS[kind].map(([k, label]) => (
+              <label key={k} className="checkbox"><input type="checkbox" checked={!v.hidden.includes(k)} onChange={() => toggle(k)} />{label}</label>
+            ))}
+          </div>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function useCustomize(kind) {
+  const { user } = useAuth();
+  const [open, setOpen] = useState(false);
+  const hidden = user.prefs?.hidden || [];
+  return {
+    show: (k) => !hidden.includes(k),
+    button: <Button size="sm" variant="ghost" icon={SlidersHorizontal} onClick={() => setOpen(true)} aria-label="התאמה אישית של המסך הראשי" title="התאמה אישית"><span className="btn-label">התאמה אישית</span></Button>,
+    modal: open && <Customize kind={kind} onClose={() => setOpen(false)} />,
+  };
+}
+
 function ManagerDashboard({ data }) {
+  const c = useCustomize('manager');
   const { kpis, current, upcoming, activity, charts } = data;
   const { user } = useAuth();
   return (
     <>
       <PageHeader title={`${greeting()}, ${user.display_name.split(' ')[0]}`} subtitle={`${longDate(data.now)} · הנה מה שקורה היום בעסק`}
-        actions={<Link to="/shifts" className="btn btn-primary"><CalendarPlus size={17} /><span className="btn-label">לוח משמרות</span></Link>} />
-      <div className="kpis">
+        actions={<>{c.button}<Link to="/shifts" className="btn btn-primary"><CalendarPlus size={17} /><span className="btn-label">לוח משמרות</span></Link></>} />
+      {c.modal}
+      <PushToggle compact />
+      {c.show('kpis') && <div className="kpis">
         <KpiCard label="עובדים פעילים" value={kpis.active_employees} icon={Users} tone="primary" />
         <KpiCard label="כרגע במשמרת" value={kpis.on_shift_now} icon={UserCheck} tone="success" hint={`מתוך ${kpis.scheduled_now} משובצים כעת`} />
         <KpiCard label="עובדים במשמרת היום" value={kpis.today_employees} icon={CalendarDays} tone="info" />
         <KpiCard label="שעות עבודה החודש" value={kpis.month_hours.toLocaleString('he-IL')} icon={Clock} tone="warning" />
         {kpis.pending_requests !== null && <KpiCard label="בקשות ממתינות" value={kpis.pending_requests} icon={Inbox} tone="danger" to="/requests" />}
         <KpiCard label="משימות פתוחות" value={kpis.open_tasks} icon={ListTodo} tone="neutral" />
-      </div>
+      </div>}
 
-      <div className="grid grid-3" style={{ marginBottom: 16 }}>
-        <Card title="המשמרת הנוכחית" icon={UserCheck} pad={false} actions={<Link to="/attendance" className="btn btn-ghost btn-sm">לנוכחות</Link>} className="span-2">
+      {(c.show('current') || c.show('activity')) && <div className={`grid ${c.show('current') && c.show('activity') ? 'grid-3' : ''}`} style={{ marginBottom: 16 }}>
+        {c.show('current') && <Card title="המשמרת הנוכחית" icon={UserCheck} pad={false} actions={<Link to="/attendance" className="btn btn-ghost btn-sm">לנוכחות</Link>} className={c.show('activity') ? 'span-2' : ''}>
           {current.length ? (
             <div className="table-wrap">
               <table className="table desktop-table">
@@ -79,8 +137,8 @@ function ManagerDashboard({ data }) {
               <div className="mobile-list">{current.map((s) => <ShiftRow key={s.id} s={s} />)}</div>
             </div>
           ) : <EmptyState icon={Coffee} title="אין משמרת פעילה כרגע" text="אף עובד לא משובץ לשעה זו." action={<Link to="/shifts" className="btn">לשיבוץ משמרות</Link>} />}
-        </Card>
-        <Card title="פעילות אחרונה" icon={Activity}>
+        </Card>}
+        {c.show('activity') && <Card title="פעילות אחרונה" icon={Activity}>
           {activity.length ? activity.map((a) => {
             const [Icon, tone] = ACTIVITY_ICON[a.action] || [Activity, 'neutral'];
             return (
@@ -93,10 +151,10 @@ function ManagerDashboard({ data }) {
               </div>
             );
           }) : <EmptyState icon={Activity} title="אין פעילות עדיין" />}
-        </Card>
-      </div>
+        </Card>}
+      </div>}
 
-      <Card title="המשמרות הקרובות" icon={CalendarClock} pad={false} className="mb" actions={<Link to="/shifts" className="btn btn-ghost btn-sm">לכל המשמרות</Link>}>
+      {c.show('upcoming') && <Card title="המשמרות הקרובות" icon={CalendarClock} pad={false} className="mb" actions={<Link to="/shifts" className="btn btn-ghost btn-sm">לכל המשמרות</Link>}>
         {upcoming.length ? (
           <div className="table-wrap">
             <table className="table desktop-table">
@@ -116,38 +174,41 @@ function ManagerDashboard({ data }) {
             <div className="mobile-list">{upcoming.map((s) => <ShiftRow key={s.id} s={s} showStatus={false} showDate />)}</div>
           </div>
         ) : <EmptyState icon={CalendarClock} title="אין משמרות קרובות" text="זה הזמן לבנות את סידור העבודה לשבוע הבא." action={<Link to="/shifts" className="btn btn-primary">יצירת משמרות</Link>} />}
-      </Card>
+      </Card>}
 
-      <div className="grid grid-2">
+      {c.show('charts') && <div className="grid grid-2">
         <Card title="שעות עבודה לפי יום" icon={BarChart3}><HoursBar data={charts.hoursByDay} xKey="date" tickFormatter={shortDate} labelFormatter={(d) => `${dayName(d)} ${shortDate(d)}`} /></Card>
         <Card title="שעות עבודה לפי עובד (החודש)" icon={Users}><HoursBar data={charts.hoursByEmployee} xKey="name" horizontal /></Card>
         <Card title="כמות עובדים לפי משמרת (השבוע)" icon={CalendarDays}><StackedBar data={charts.employeesByShift} xKey="day" keys={['בוקר', 'צהריים/ערב', 'לילה']} /></Card>
         <Card title="השוואת שעות בין חודשים" icon={Clock}><HoursArea data={charts.monthComparison} xKey="month" tickFormatter={monthShort} labelFormatter={monthShort} /></Card>
-      </div>
+      </div>}
     </>
   );
 }
 
 function EmployeeDashboard({ data, reload }) {
   const { user } = useAuth();
+  const c = useCustomize('employee');
   const [clock, setClock] = useState(null);
   const loadClock = () => api.get('/attendance/me').then(setClock).catch(() => {});
   useEffect(() => { loadClock(); }, []);
   const { kpis, upcoming, tasks, charts } = data;
   return (
     <>
-      <PageHeader title={`${greeting()}, ${user.display_name.split(' ')[0]}`} subtitle={longDate(data.now)} />
-      <div className="grid grid-2" style={{ marginBottom: 16 }}>
-        <ClockWidget data={clock} onChange={() => { loadClock(); reload({ silent: true }); }} />
-        <div className="kpis" style={{ margin: 0, gridTemplateColumns: 'repeat(2, minmax(0,1fr))' }}>
+      <PageHeader title={`${greeting()}, ${user.display_name.split(' ')[0]}`} subtitle={longDate(data.now)} actions={c.button} />
+      {c.modal}
+      <PushToggle compact />
+      {(c.show('clock') || c.show('kpis')) && <div className={`grid ${c.show('clock') && c.show('kpis') ? 'grid-2' : ''}`} style={{ marginBottom: 16 }}>
+        {c.show('clock') && <ClockWidget data={clock} onChange={() => { loadClock(); reload({ silent: true }); }} />}
+        {c.show('kpis') && <div className="kpis" style={{ margin: 0, gridTemplateColumns: 'repeat(2, minmax(0,1fr))' }}>
           <KpiCard label="משמרות השבוע" value={kpis.week_shifts} icon={CalendarDays} tone="primary" />
           <KpiCard label="שעות החודש" value={kpis.month_hours} icon={Clock} tone="success" />
           <KpiCard label="משימות פתוחות" value={kpis.open_tasks} icon={ListTodo} tone="warning" />
           <KpiCard label="בקשות ממתינות" value={kpis.pending_requests} icon={Inbox} tone="info" />
-        </div>
-      </div>
+        </div>}
+      </div>}
       <div className="grid grid-2">
-        <Card title="המשמרות הקרובות שלי" icon={CalendarClock} pad={false} actions={<Link to="/shifts" className="btn btn-ghost btn-sm">ללוח</Link>}>
+        {c.show('upcoming') && <Card title="המשמרות הקרובות שלי" icon={CalendarClock} pad={false} actions={<Link to="/shifts" className="btn btn-ghost btn-sm">ללוח</Link>}>
           {upcoming.length ? (
             <div className="list">
               {upcoming.map((s) => (
@@ -164,8 +225,8 @@ function EmployeeDashboard({ data, reload }) {
               ))}
             </div>
           ) : <EmptyState icon={CalendarClock} title="אין משמרות קרובות" text="כשתשובץ/י למשמרת היא תופיע כאן ותקבל/י התראה." />}
-        </Card>
-        <Card title="המשימות שלי" icon={ListTodo} pad={false} actions={<Link to="/tasks" className="btn btn-ghost btn-sm">לכל המשימות</Link>}>
+        </Card>}
+        {c.show('tasks') && <Card title="המשימות שלי" icon={ListTodo} pad={false} actions={<Link to="/tasks" className="btn btn-ghost btn-sm">לכל המשימות</Link>}>
           {tasks.length ? (
             <div className="list">
               {tasks.map((t) => (
@@ -180,22 +241,32 @@ function EmployeeDashboard({ data, reload }) {
               ))}
             </div>
           ) : <EmptyState icon={CheckCircle2} title="אין משימות פתוחות" text="כל הכבוד! אין משימות שממתינות לך." />}
-        </Card>
-        <Card title="השעות שלי לפי חודש" icon={BarChart3}><HoursBar data={charts.monthComparison} xKey="month" tickFormatter={monthShort} labelFormatter={monthShort} /></Card>
-        <Card title="פעולות מהירות" icon={Activity}>
+        </Card>}
+        {c.show('chart') && <Card title="השעות שלי לפי חודש" icon={BarChart3}><HoursBar data={charts.monthComparison} xKey="month" tickFormatter={monthShort} labelFormatter={monthShort} /></Card>}
+        {c.show('quick') && <Card title="פעולות מהירות" icon={Activity}>
           <div className="grid" style={{ gridTemplateColumns: '1fr 1fr' }}>
             <Link to="/requests?new=vacation" className="btn btn-lg">בקשת חופשה</Link>
             <Link to="/requests?new=shift_swap" className="btn btn-lg">החלפת משמרת</Link>
             <Link to="/schedule?tab=submit" className="btn btn-lg">הגשת זמינות</Link>
-            <Link to="/attendance" className="btn btn-lg">השעות שלי</Link>
+            <Link to="/my-hours" className="btn btn-lg">תלוש שעות</Link>
           </div>
-        </Card>
+        </Card>}
       </div>
     </>
   );
 }
 
 export default function Dashboard() {
+  const { user } = useAuth();
+  const navigate = useNavigate();
+  const start = user.prefs?.start;
+  // Open the chosen main screen once per app launch (the home page stays reachable from the menu).
+  useEffect(() => {
+    if (!LAUNCHED_AT_HOME) return;
+    let first = false;
+    try { first = !sessionStorage.getItem('started'); sessionStorage.setItem('started', '1'); } catch { /* storage unavailable */ }
+    if (first && start && start !== '/') navigate(start, { replace: true });
+  }, [start, navigate]);
   const { data, loading, error, reload } = useApi('/dashboard');
   if (loading && !data) return <SkeletonPage />;
   if (error) return <div className="card"><ErrorState error={error} onRetry={reload} /></div>;

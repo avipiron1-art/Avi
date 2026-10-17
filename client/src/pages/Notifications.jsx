@@ -8,6 +8,7 @@ import { api } from '../lib/api.js';
 import { useToast } from '../lib/toast.jsx';
 import { Button, Card, EmptyState, ErrorState, IconButton, PageHeader, SkeletonRows, Tabs } from '../components/ui.jsx';
 import { dateTime, timeAgo } from '../lib/format.js';
+import PushToggle from '../components/PushToggle.jsx';
 
 const ICONS = {
   shift_assigned: [CalendarPlus, 'primary'], shift_changed: [CalendarClock, 'warning'], shift_cancelled: [CalendarX, 'danger'],
@@ -41,6 +42,7 @@ export default function Notifications() {
     <>
       <PageHeader title="מרכז התראות" subtitle={data ? `${data.unread} התראות שלא נקראו` : undefined}
         actions={data?.unread > 0 && <Button icon={CheckCheck} onClick={readAll}>סימון הכל כנקרא</Button>} />
+      <div className="mb"><PushToggle /></div>
       <Tabs value={filter} onChange={setFilter} tabs={[{ value: '', label: 'הכל' }, { value: 'unread', label: 'לא נקראו', count: data?.unread }]} />
       <Card pad={false}>
         {error ? <ErrorState error={error} onRetry={reload} /> : loading && !data ? <SkeletonRows rows={6} /> : !data.notifications.length ? (

@@ -8,6 +8,38 @@ import { clearPermissionCache } from '../services/permissions.js';
 import { computeAttendance } from '../lib/attendance.js';
 
 process.env.NODE_ENV = 'test';
+
+// ---- fake Google OAuth + Drive for the backup tests ----
+import http from 'node:http';
+const google = { uploads: [], files: [], tokenCalls: 0, deleted: [] };
+const googleServer = http.createServer((req, res) => {
+  let body = [];
+  req.on('data', (c) => body.push(c));
+  req.on('end', () => {
+    body = Buffer.concat(body);
+    const json = (code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(obj)); };
+    const u = new URL(req.url, 'http://x');
+    if (u.pathname === '/device/code') return json(200, { device_code: 'dev1', user_code: 'ABCD-EFGH', verification_url: 'https://www.google.com/device', interval: 0, expires_in: 60 });
+    if (u.pathname === '/token') {
+      const p = new URLSearchParams(body.toString());
+      if (p.get('grant_type') === 'refresh_token') return json(200, { access_token: 'at1' });
+      google.tokenCalls += 1;
+      return google.tokenCalls < 2 ? json(428, { error: 'authorization_pending' }) : json(200, { refresh_token: 'rt1', access_token: 'at1' });
+    }
+    if (req.headers.authorization !== 'Bearer at1') return json(401, {});
+    if (u.pathname === '/drive/v3/files' && req.method === 'GET') {
+      if (u.searchParams.get('q').includes('mimeType')) return json(200, { files: [] });
+      return json(200, { files: [...google.files].reverse() });
+    }
+    if (u.pathname === '/drive/v3/files' && req.method === 'POST') return json(200, { id: 'folder1' });
+    if (u.pathname === '/upload/drive/v3/files') { const id = `f${google.files.length + 1}`; google.files.push({ id }); google.uploads.push(body); return json(200, { id }); }
+    if (u.pathname.startsWith('/drive/v3/files/') && req.method === 'DELETE') { google.deleted.push(u.pathname.split('/').pop()); res.writeHead(204); return res.end(); }
+    json(404, {});
+  });
+}).listen(0);
+const gbase = `http://localhost:${googleServer.address().port}`;
+process.env.GOOGLE_OAUTH_BASE = gbase;
+process.env.GOOGLE_DRIVE_BASE = gbase;
 let server;
 let base;
 
@@ -20,7 +52,7 @@ before(async () => {
   server = createApp().listen(0);
   base = `http://localhost:${server.address().port}/api`;
 });
-after(() => server.close());
+after(() => { server.close(); googleServer.close(); });
 
 /** Minimal cookie-aware client */
 async function login(identifier, password) {
@@ -417,4 +449,323 @@ test('a delegated user manager cannot take over main-admin accounts', async () =
   assert.equal((await o.put(`/users/${ori.id}/permissions`, { permissions: Object.keys({}) })).status, 403);
   assert.equal((await o.get('/users')).status, 200, 'delegated permission still works for normal users');
   await admin.put(`/users/${ori.id}/permissions`, { permissions: perms });
+});
+
+test('Google Drive backup: connect with a device code, upload a gzip snapshot, keep N copies', async () => {
+  const admin = await login('admin', 'Admin1234');
+  const emp = await login('yossi', 'Employee1234');
+  assert.equal((await emp.get('/backup/status')).status, 403);
+  assert.equal((await emp.get('/backup/download')).status, 403);
+  const bad = await admin.put('/backup/drive/config', { client_id: 'nope', client_secret: 'x' });
+  assert.equal(bad.status, 400);
+  assert.equal((await admin.put('/backup/drive/config', { client_id: '123-abc.apps.googleusercontent.com', client_secret: 'secret-123456' })).status, 200);
+  const settings = (await admin.get('/settings')).body.settings;
+  assert.equal(settings.gdrive_client_secret, undefined, 'secrets never sent to the browser');
+  const c = await admin.post('/backup/drive/connect');
+  assert.equal(c.body.pending.user_code, 'ABCD-EFGH');
+  let st;
+  for (let i = 0; i < 50; i += 1) { st = (await admin.get('/backup/status')).body; if (st.connected && st.last_backup) break; await new Promise((r) => setTimeout(r, 50)); }
+  assert.ok(st.connected, 'connected after the user approved the code');
+  assert.ok(st.last_backup, 'first backup runs right after connecting');
+  const zlib = await import('node:zlib');
+  const gz = google.uploads[0];
+  const start = gz.indexOf(Buffer.from([0x1f, 0x8b]));
+  const db = zlib.gunzipSync(gz.subarray(start, gz.lastIndexOf(Buffer.from('\r\n--'))));
+  assert.equal(db.subarray(0, 15).toString(), 'SQLite format 3', 'uploaded file is a real SQLite database');
+  // retention
+  await admin.put('/settings', { ...(await admin.get('/settings')).body.settings, backup_keep: 2 });
+  await admin.post('/backup/run'); await admin.post('/backup/run');
+  assert.ok(google.deleted.length >= 1, 'old copies beyond backup_keep are deleted');
+  // manual download
+  const dl = await admin.get('/backup/download');
+  assert.equal(dl.status, 200);
+  assert.match(dl.headers.get('content-disposition'), /shiftly-.*\.db\.gz/);
+});
+
+test('join link: new employee signs up, managers are notified with the details, link is single-use', async () => {
+  const admin = await login('admin', 'Admin1234');
+  const emp = await login('yossi', 'Employee1234');
+  assert.equal((await emp.post('/invites', {})).status, 403);
+  const inv = await admin.post('/invites', { label: 'מלצרים', max_uses: 1, expires_days: 3 });
+  assert.equal(inv.status, 201);
+  const token = inv.body.path.split('/').pop();
+  const info = await fetch(`${base}/join/${token}`);
+  assert.equal(info.status, 200);
+  const body = { first_name: 'דנה', last_name: 'חדשה', phone: '050-1234567', email: 'new.dana@example.com', username: 'dana.new', password: 'Welcome123' };
+  const weak = await fetch(`${base}/join/${token}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, password: '123' }) });
+  assert.equal(weak.status, 400);
+  const ok = await fetch(`${base}/join/${token}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  assert.equal(ok.status, 201);
+  assert.ok(ok.headers.getSetCookie().some((c) => c.startsWith('sid=')), 'signed in right away');
+  const fresh = await login('dana.new', 'Welcome123');
+  const me = (await fresh.get('/auth/me')).body.user;
+  assert.equal(me.role, 'employee');
+  assert.ok(me.employee_id);
+  const n = (await admin.get('/notifications')).body.notifications.find((x) => x.type === 'employee_joined');
+  assert.match(n.title, /דנה חדשה/);
+  assert.match(n.body, /dana\.new/);
+  const again = await fetch(`${base}/join/${token}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ...body, username: 'other', email: 'o@example.com' }) });
+  assert.equal(again.status, 400, 'single-use link cannot be reused');
+  assert.equal((await fetch(`${base}/join/not-a-real-token-123`)).status, 404);
+});
+
+test('first-come shift claims: capacity, shift-lead slots, manager approval keeps late claims', async () => {
+  const admin = await login('admin', 'Admin1234');
+  const types = (await admin.get('/schedule/shift-types')).body.types;
+  const t = types[0];
+  await admin.put(`/schedule/shift-types/${t.id}`, { ...t, is_active: true, required_workers: 2, required_leads: 1 });
+  const d = new Date(); d.setUTCDate(d.getUTCDate() + 7 - d.getUTCDay() + 35); // a Sunday ~6 weeks ahead
+  const date = d.toISOString().slice(0, 10);
+  const users = { a: await login('shira', 'Employee1234'), b: await login('omer', 'Employee1234'), c: await login('daniel', 'Employee1234') };
+  const ids = {};
+  for (const [k, u] of Object.entries(users)) ids[k] = (await u.get('/auth/me')).body.user.employee_id;
+
+  // shira is not a shift lead yet
+  assert.equal((await users.a.post('/schedule/claim', { date, shift_type_id: t.id, as_lead: true })).status, 400);
+  const emp = (await admin.get(`/employees/${ids.a}`)).body.employee;
+  await admin.put(`/employees/${ids.a}`, { ...emp, can_lead: true, avatar: undefined });
+  const managerLoaded = (await admin.get(`/schedule/board?week=${date}`)).body.loaded_at;
+  assert.equal((await users.a.post('/schedule/claim', { date, shift_type_id: t.id, as_lead: true })).status, 201);
+  assert.equal((await users.b.post('/schedule/claim', { date, shift_type_id: t.id })).status, 201);
+  const full = await users.c.post('/schedule/claim', { date, shift_type_id: t.id });
+  assert.equal(full.status, 400, 'only 1 regular slot (2 workers − 1 lead)');
+  assert.equal((await users.b.post('/schedule/claim', { date, shift_type_id: t.id })).status, 400, 'no double claim');
+
+  const open = (await users.c.get(`/schedule/open?week=${date}`)).body.slots.find((s) => s.date === date && s.shift_type_id === t.id);
+  assert.equal(open.taken_leads, 1);
+  assert.equal(open.taken_regular, 1);
+
+  // manager saves a board loaded BEFORE the claims: claims are kept
+  await admin.put('/schedule/board', { week_start: date, assignments: [], loaded_at: managerLoaded });
+  const board = (await admin.get(`/schedule/board?week=${date}`)).body;
+  const claims = board.assignments.filter((a) => a.date === date && a.status === 'claimed');
+  assert.equal(claims.length, 2, 'late claims survive an older board save');
+
+  // approve shira, reject omer
+  const approved = claims.filter((c) => c.employee_id === ids.a).map((c) => ({ ...c, is_lead: !!c.is_lead, status: 'approved' }));
+  await admin.put('/schedule/board', { week_start: date, assignments: approved, loaded_at: board.loaded_at });
+  const na = (await users.a.get('/notifications')).body.notifications;
+  assert.ok(na.some((n) => n.title.includes('אושרה')));
+  const nb = (await users.b.get('/notifications')).body.notifications;
+  assert.ok(nb.some((n) => n.title.includes('לא אושרה')));
+  // a slot freed up -> daniel can claim now; cannot cancel an approved pick
+  assert.equal((await users.c.post('/schedule/claim', { date, shift_type_id: t.id })).status, 201);
+  assert.equal((await users.a.del(`/schedule/claim?date=${date}&shift_type_id=${t.id}`)).status, 400);
+  assert.equal((await users.c.del(`/schedule/claim?date=${date}&shift_type_id=${t.id}`)).status, 200);
+  // publishing only creates shifts for approved picks
+  const pub = await admin.post('/schedule/publish', { week_start: date, assignments: approved });
+  assert.equal(pub.status, 200);
+  const shiftsA = (await users.a.get(`/shifts?from=${date}&to=${date}`)).body.shifts;
+  assert.ok(shiftsA.some((s) => s.is_lead === 1));
+  await admin.put(`/schedule/shift-types/${t.id}`, { ...t, is_active: true, required_workers: 0, required_leads: 0 });
+});
+
+test('shift swap board: offer, take, manager approves and the shift moves', async () => {
+  const admin = await login('admin', 'Admin1234');
+  const a = await login('shira', 'Employee1234');
+  const b = await login('omer', 'Employee1234');
+  const ida = (await a.get('/auth/me')).body.user.employee_id;
+  const idb = (await b.get('/auth/me')).body.user.employee_id;
+  const s = (await admin.post('/shifts', { employee_ids: [ida], date: '2031-07-07', start_time: '08:00', end_time: '14:00', force: true })).body.shifts[0];
+  assert.equal((await b.post('/swaps', { shift_id: s.id })).status, 403, 'cannot offer someone else\'s shift');
+  const offer = await a.post('/swaps', { shift_id: s.id, note: 'מבחן' });
+  assert.equal(offer.status, 201);
+  assert.equal((await a.post('/swaps', { shift_id: s.id })).status, 400, 'already offered');
+  const board = (await b.get('/swaps')).body;
+  const w = board.open.find((x) => x.shift_id === s.id);
+  assert.ok(w, 'colleague sees the offer');
+  assert.equal(board.can_approve, false);
+  assert.equal((await a.post(`/swaps/${w.id}/take`)).status, 400, 'cannot take own shift');
+  assert.equal((await b.post(`/swaps/${w.id}/decide`, { approve: true })).status, 403);
+  assert.equal((await b.post(`/swaps/${w.id}/take`)).status, 200);
+  assert.equal((await admin.post(`/swaps/${w.id}/take`)).status, 403, 'admin without employee record cannot take');
+  const pending = (await admin.get('/swaps')).body.pending;
+  assert.ok(pending.some((x) => x.id === w.id));
+  assert.equal((await admin.post(`/swaps/${w.id}/decide`, { approve: true })).status, 200);
+  const moved = getDb().prepare('SELECT employee_id FROM shifts WHERE id = ?').get(s.id);
+  assert.equal(moved.employee_id, idb);
+  assert.ok((await a.get('/notifications')).body.notifications.some((n) => n.title === 'ההחלפה אושרה'));
+  assert.equal((await admin.post(`/swaps/${w.id}/decide`, { approve: true })).status, 400, 'cannot decide twice');
+});
+
+test('location clock-in: far away is refused, nearby is recorded with the distance; shift-end reminder', async () => {
+  const { nowLocal, addMinutes } = await import('../lib/time.js');
+  const { checkShiftEndReminders } = await import('../services/jobs.js');
+  const admin = await login('admin', 'Admin1234');
+  const db = getDb();
+  const loc = await admin.post('/meta/locations', { name: 'סניף בדיקה', address: 'x', is_active: true, latitude: 32.0853, longitude: 34.7818, radius_m: 100, require_location: true });
+  assert.equal(loc.status, 201);
+  assert.equal((await admin.post('/meta/locations', { name: 'בלי נקודה', is_active: true, require_location: true })).status, 400, 'require needs coordinates');
+  const hash = db.prepare("SELECT password_hash FROM users WHERE username = 'yossi'").get().password_hash;
+  const empId = db.prepare("INSERT INTO employees (employee_code, first_name, last_name, status, location_id, start_date) VALUES ('GEO-1', 'גאו', 'בודק', 'active', ?, '2024-01-01')").run(loc.body.id).lastInsertRowid;
+  db.prepare("INSERT INTO users (username, email, display_name, password_hash, role_id, employee_id) VALUES ('geo', 'geo@x.io', 'גאו בודק', ?, (SELECT id FROM roles WHERE key = 'employee'), ?)").run(hash, empId);
+  const now = nowLocal();
+  const shiftId = db.prepare("INSERT INTO shifts (employee_id, start_at, end_at, status) VALUES (?, ?, ?, 'scheduled')").run(empId, addMinutes(now, -5), addMinutes(now, 120)).lastInsertRowid;
+  const geo = await login('geo', 'Employee1234');
+  const none = await geo.post('/attendance/clock-in', {});
+  assert.equal(none.status, 400);
+  assert.equal(none.body.code, 'location_required');
+  const far = await geo.post('/attendance/clock-in', { lat: 32.1, lng: 34.8, accuracy: 10 });
+  assert.equal(far.status, 400);
+  assert.equal(far.body.code, 'location_far');
+  const near = await geo.post('/attendance/clock-in', { lat: 32.0855, lng: 34.7820, accuracy: 15 });
+  assert.equal(near.status, 200, JSON.stringify(near.body));
+  const att = db.prepare('SELECT clock_in_distance_m FROM attendance WHERE shift_id = ?').get(shiftId);
+  assert.ok(att.clock_in_distance_m >= 0 && att.clock_in_distance_m < 100);
+  // the shift ended 30 minutes ago and the employee is still clocked in → one urgent reminder
+  db.prepare('UPDATE shifts SET start_at = ?, end_at = ? WHERE id = ?').run(addMinutes(now, -150), addMinutes(now, -30), shiftId);
+  assert.ok(checkShiftEndReminders() >= 1);
+  assert.equal(checkShiftEndReminders(), 0, 'only once');
+  assert.ok((await geo.get('/notifications')).body.notifications.some((n) => n.type === 'shift_end'));
+  assert.equal((await geo.post('/attendance/clock-out', { lat: 32.0854, lng: 34.7819 })).status, 200);
+});
+
+test('pay hours follow the overtime rules: daily tiers, rest day and holiday premiums', async () => {
+  const { splitDay } = await import('../services/payroll.js');
+  const opts = { dailyMinutes: 8 * 60, tier1Minutes: 2 * 60 };
+  // Sunday 2031-03-02: 11 hours → 8 regular, 2 at 125%, 1 at 150%
+  const sun = splitDay([['2031-03-02T07:00', '2031-03-02T18:00']], opts);
+  assert.deepEqual(sun, { regular: 480, ot1: 120, ot2: 60, rest: 0, rest_ot1: 0, rest_ot2: 0 });
+  // Saturday 2031-03-08: 9 hours → 8 at 150%, 1 at 175%
+  const sat = splitDay([['2031-03-08T08:00', '2031-03-08T17:00']], opts);
+  assert.equal(sat.rest, 480);
+  assert.equal(sat.rest_ot1, 60);
+  // Friday night into Saturday: 22:00–06:00 → 2 regular hours, 6 rest-day hours
+  const night = splitDay([['2031-03-07T22:00', '2031-03-08T06:00']], opts);
+  assert.equal(night.regular, 120);
+  assert.equal(night.rest, 360);
+  // Yom Kippur 2031 (Sept 27) is a paid holiday
+  const yk = splitDay([['2031-09-27T08:00', '2031-09-27T12:00']], opts);
+  assert.equal(yk.rest, 240);
+
+  const admin = await login('admin', 'Admin1234');
+  const month = new Date().toISOString().slice(0, 7);
+  const pay = await admin.get(`/reports/payroll?month=${month}`);
+  assert.equal(pay.status, 200);
+  assert.ok(pay.body.employees.length > 0);
+  assert.ok('ot1' in pay.body.employees[0].buckets);
+  const xlsx = await admin.get(`/reports/payroll?month=${month}&format=xlsx`);
+  assert.match(xlsx.headers.get('content-type'), /spreadsheetml/);
+  const csv = await admin.get(`/reports/payroll?month=${month}&format=csv`);
+  assert.match(csv.body, /ת\.ז\./);
+  const emp = await login('yossi', 'Employee1234');
+  assert.equal((await emp.get(`/reports/payroll?month=${month}`)).status, 403);
+  const slip = await emp.get(`/attendance/me/slip?month=${month}`);
+  assert.equal(slip.status, 200);
+  assert.ok(slip.body.employee === null || slip.body.employee.employee_name);
+  assert.equal(slip.body.employee?.hourly_wage, undefined, 'no wage on the personal slip');
+  assert.equal((await emp.get(`/attendance/me/slip?month=2031-13`)).status, 400);
+  const file = await emp.get(`/attendance/me/slip?month=${month}&format=xlsx`);
+  assert.match(file.headers.get('content-type'), /spreadsheetml/);
+});
+
+test('announcements: urgency, must-confirm popup queue, confirmation tracking, permissions', async () => {
+  const admin = await login('admin', 'Admin1234');
+  const emp = await login('yossi', 'Employee1234');
+  assert.equal((await emp.post('/announcements', { title: 'x' })).status, 403);
+  const r = await admin.post('/announcements', { title: 'נוהל ניקיון חדש', body: 'מהיום…', urgency: 'critical', requires_ack: true });
+  assert.equal(r.status, 201);
+  assert.ok(r.body.recipients > 3);
+  await admin.post('/announcements', { title: 'מסיבת צוות', urgency: 'low' });
+  const pending = (await emp.get('/announcements/pending')).body.announcements;
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].title, 'נוהל ניקיון חדש');
+  assert.equal((await emp.get('/announcements/unread-count')).body.unread, 2);
+  const list = (await emp.get('/announcements')).body;
+  assert.equal(list.announcements[0].urgency, 'critical', 'most urgent first');
+  assert.equal(list.announcements[0].stats, undefined, 'employees do not see stats');
+  assert.ok((await emp.get('/notifications')).body.notifications.some((n) => n.type === 'announcement'));
+  assert.equal((await emp.post(`/announcements/${r.body.id}/ack`)).status, 200);
+  assert.equal((await emp.get('/announcements/pending')).body.announcements.length, 0, 'no more popup after confirming');
+  const st = (await admin.get(`/announcements/${r.body.id}/status`)).body.people;
+  assert.ok(st.find((p) => p.name.includes('יוסי'))?.acked_at);
+  const mine = (await admin.get('/announcements')).body.announcements.find((a) => a.id === r.body.id);
+  assert.equal(mine.stats.acked, 1);
+  assert.equal((await emp.get(`/announcements/${r.body.id}/status`)).status, 403);
+  // targeted to another department → invisible
+  const otherDept = getDb().prepare('SELECT id FROM departments WHERE id != (SELECT department_id FROM employees WHERE id = (SELECT employee_id FROM users WHERE username = ?)) LIMIT 1').get('yossi').id;
+  const t = await admin.post('/announcements', { title: 'רק למטבח', department_id: otherDept, requires_ack: true });
+  assert.ok(!(await emp.get('/announcements')).body.announcements.some((a) => a.id === t.body.id));
+  assert.equal((await emp.post(`/announcements/${t.body.id}/ack`)).status, 404);
+  assert.equal((await admin.del(`/announcements/${t.body.id}`)).status, 200);
+});
+
+test('two-step login with an authenticator code, recovery code, admin reset', async () => {
+  const { totpAt, currentStep } = await import('../services/mfa.js');
+  const db = getDb();
+  const hash = db.prepare("SELECT password_hash FROM users WHERE username = 'yossi'").get().password_hash;
+  db.prepare("INSERT INTO users (username, email, display_name, password_hash, role_id) VALUES ('mfa.user', 'mfa@x.io', 'משתמש אימות', ?, (SELECT id FROM roles WHERE key = 'employee'))").run(hash);
+  const u = await login('mfa.user', 'Employee1234');
+  assert.equal((await u.post('/auth/2fa/setup', { password: 'wrong' })).status, 400);
+  const setup = await u.post('/auth/2fa/setup', { password: 'Employee1234' });
+  assert.equal(setup.status, 200);
+  assert.match(setup.body.qr, /^data:image\/png;base64,/);
+  assert.match(setup.body.otpauth_url, /^otpauth:\/\/totp\//);
+  const secret = setup.body.secret;
+  assert.equal((await u.post('/auth/2fa/enable', { code: '000000' })).status, 400);
+  // use the previous 30-second step so the login below can use the current one (codes can't be reused)
+  const en = await u.post('/auth/2fa/enable', { code: totpAt(secret, currentStep() - 1) });
+  assert.equal(en.status, 200);
+  assert.equal(en.body.recovery_codes.length, 8);
+
+  const step1 = await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identifier: 'mfa.user', password: 'Employee1234' }) });
+  const b1 = await step1.json();
+  assert.equal(b1.mfa_required, true);
+  assert.ok(!step1.headers.getSetCookie().some((c) => c.startsWith('sid=')), 'no session before the code');
+  const mfa = (code) => fetch(`${base}/auth/login/mfa`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mfa_token: b1.mfa_token, code }) });
+  assert.equal((await mfa('123456')).status, 400);
+  const ok = await mfa(totpAt(secret, currentStep()));
+  assert.equal(ok.status, 200);
+  assert.ok(ok.headers.getSetCookie().some((c) => c.startsWith('sid=')));
+  assert.equal((await mfa(totpAt(secret, currentStep()))).status, 401, 'token is single-use');
+
+  // recovery code works once
+  const again = await (await fetch(`${base}/auth/login`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ identifier: 'mfa.user', password: 'Employee1234' }) })).json();
+  const rc = en.body.recovery_codes[0];
+  const r1 = await fetch(`${base}/auth/login/mfa`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mfa_token: again.mfa_token, code: rc }) });
+  assert.equal(r1.status, 200);
+  assert.equal(JSON.parse(db.prepare("SELECT recovery_codes FROM users WHERE username = 'mfa.user'").get().recovery_codes).length, 7);
+
+  // admin resets it (lost phone) → password alone works again
+  const admin = await login('admin', 'Admin1234');
+  const id = db.prepare("SELECT id FROM users WHERE username = 'mfa.user'").get().id;
+  assert.equal((await admin.post(`/users/${id}/reset-mfa`)).status, 200);
+  await login('mfa.user', 'Employee1234');
+  const sec = await (await login('mfa.user', 'Employee1234')).get('/auth/security');
+  assert.equal(sec.body.totp_enabled, false);
+  assert.equal((await fetch(`${base}/auth/passkeys/login/options`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 200);
+});
+
+test('branch manager sees only their branch; an on-duty shift lead gets attendance rights for their own shift', async () => {
+  const { nowLocal, addMinutes } = await import('../lib/time.js');
+  const db = getDb();
+  const admin = await login('admin', 'Admin1234');
+  const locs = db.prepare('SELECT id FROM locations ORDER BY id LIMIT 2').all().map((l) => l.id);
+  assert.equal(locs.length, 2);
+  const smId = db.prepare("SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.key = 'shift_manager' LIMIT 1").get().id;
+  const sm = (await admin.get('/users')).body.users.find((u) => u.id === smId);
+  assert.equal((await admin.put(`/users/${smId}`, { ...sm, location_id: locs[0], is_active: true })).status, 200);
+  const smUser = await login(sm.username, 'Manager1234');
+  const emps = (await smUser.get('/employees')).body.employees;
+  assert.ok(emps.length > 0);
+  assert.ok(emps.every((e) => e.location_id === locs[0]), 'only own branch employees');
+  const today = nowLocal().slice(0, 10);
+  const board = (await smUser.get(`/attendance?date=${today}`)).body.rows;
+  assert.ok(board.every((r) => (r.location_id ?? emps.find((e) => e.id === r.employee_id)?.location_id) === locs[0]));
+  await admin.put(`/users/${smId}`, { ...sm, location_id: null, is_active: true });
+
+  // shift lead on duty
+  const lead = await login('omer', 'Employee1234');
+  const leadEmp = (await lead.get('/auth/me')).body.user.employee_id;
+  assert.equal((await lead.get(`/attendance?date=${today}`)).status, 403, 'not a lead right now');
+  const now = nowLocal();
+  db.prepare("INSERT INTO shifts (employee_id, start_at, end_at, status, is_lead) VALUES (?, ?, ?, 'scheduled', 1)").run(leadEmp, addMinutes(now, -60), addMinutes(now, 120));
+  const me = (await lead.get('/auth/me')).body.user;
+  assert.ok(me.lead_scope, 'lead scope exposed');
+  assert.ok(me.permissions.includes('attendance.manage'));
+  const rows = (await lead.get(`/attendance?date=${today}`)).body.rows;
+  assert.ok(rows.every((r) => r.start_at < me.lead_scope.to && r.end_at > me.lead_scope.from), 'only the overlapping shift');
+  const outside = db.prepare("SELECT id FROM shifts WHERE status = 'scheduled' AND (end_at <= ? OR start_at >= ?) LIMIT 1").get(me.lead_scope.from, me.lead_scope.to);
+  assert.equal((await lead.put(`/attendance/${outside.id}`, { marked_absent: true })).status, 403);
+  assert.equal((await lead.get('/employees')).status, 403, 'no other manager rights');
 });

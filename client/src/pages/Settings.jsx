@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
-  KeyRound, Building2, Network, UserCog, ShieldCheck, History, Plus, Pencil, Trash2, Save, Search, Lock, ChevronDown, ChevronUp, Moon, Sun, RotateCcw,
+  KeyRound, Building2, Network, UserCog, ShieldCheck, History, Plus, Pencil, Trash2, Save, Search, Lock, ChevronDown, ChevronUp, Moon, Sun, RotateCcw, MapPin, Upload, Image as ImageIcon, Fingerprint, CloudUpload,
 } from 'lucide-react';
 import { useApi, useDebounced } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
@@ -12,6 +12,9 @@ import {
   Badge, Button, Card, EmptyState, ErrorState, Field, IconButton, Input, Modal, PageHeader, Select, SkeletonRows, Tabs, Textarea, useConfirm, useForm,
 } from '../components/ui.jsx';
 import { dateTime } from '../lib/format.js';
+import { applyBrandColor, useBranding } from '../lib/branding.jsx';
+import SecuritySettings from '../components/SecuritySettings.jsx';
+import BackupSettings from '../components/BackupSettings.jsx';
 
 // ---------------- profile ----------------
 function Profile() {
@@ -91,6 +94,8 @@ function Account() {
 // ---------------- business settings ----------------
 function Business() {
   const toast = useToast();
+  const branding = useBranding();
+  useEffect(() => () => applyBrandColor(branding.brand_color), [branding.brand_color]); // undo unsaved preview on leave
   const { reloadMeta } = useAuth();
   const { data, loading, error, reload } = useApi('/settings');
   const [v, setV] = useState(null);
@@ -102,7 +107,7 @@ function Business() {
   const set = (k) => (e) => setV((s) => ({ ...s, [k]: e.target.value }));
   const save = async () => {
     setSaving(true);
-    try { const r = await api.put('/settings', v); toast.success(r.message); setErrors({}); reloadMeta(); } catch (e) { setErrors(e.fields); toast.error(e); } finally { setSaving(false); }
+    try { const r = await api.put('/settings', v); toast.success(r.message); setErrors({}); reloadMeta(); branding.reload(); } catch (e) { setErrors(e.fields); toast.error(e); } finally { setSaving(false); }
   };
   return (
     <Card title="הגדרות העסק" icon={Building2} actions={<Button variant="primary" icon={Save} onClick={save} loading={saving}>שמירה</Button>}>
@@ -114,17 +119,103 @@ function Business() {
         <Field label="סבולת יציאה מוקדמת (דקות)" error={errors.early_leave_grace_minutes}><Input type="number" min="0" value={v.early_leave_grace_minutes} onChange={set('early_leave_grace_minutes')} /></Field>
         <Field label="שעות נוספות אחרי (שעות למשמרת)" error={errors.overtime_daily_hours}><Input type="number" min="1" step="0.5" value={v.overtime_daily_hours} onChange={set('overtime_daily_hours')} /></Field>
         <Field label="התראה על משימה (ימים לפני היעד)" error={errors.task_due_soon_days}><Input type="number" min="0" value={v.task_due_soon_days} onChange={set('task_due_soon_days')} /></Field>
+        <Field label="תזכורת לסיום משמרת (דקות אחרי הסיום)" hint="לעובד שעדיין לא החתים יציאה. 0 = מיד בסיום" error={errors.shift_end_reminder_minutes}><Input type="number" min="0" max="240" value={v.shift_end_reminder_minutes} onChange={set('shift_end_reminder_minutes')} /></Field>
+      </div>
+
+      <h3 className="settings-section">מיתוג</h3>
+      <div className="form-grid">
+        <Field label="לוגו העסק" hint="PNG / JPG, יוצג בתפריט, במסך הכניסה ובהזמנות" error={errors.logo}>
+          <div className="logo-picker">
+            {v.logo ? <img src={v.logo} alt="לוגו" /> : <span className="logo-empty"><ImageIcon size={22} /></span>}
+            <label className="btn btn-sm">
+              <Upload size={15} />העלאה
+              <input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={async (e) => {
+                const f = e.target.files?.[0]; e.target.value = '';
+                if (!f) return;
+                try { const logo = await shrinkImage(f, 256); setV((x) => ({ ...x, logo })); } catch { toast.error('לא ניתן לקרוא את התמונה'); }
+              }} />
+            </label>
+            {v.logo && <Button size="sm" variant="ghost" onClick={() => setV((x) => ({ ...x, logo: '' }))}>הסרה</Button>}
+          </div>
+        </Field>
+        <Field label="צבע ראשי" hint="הכפתורים, הקישורים והתפריט ייצבעו בצבע הזה" error={errors.brand_color}>
+          <div className="flex flex-wrap">
+            <Input type="color" value={v.brand_color || '#4f46e5'} onChange={(e) => { set('brand_color')(e); applyBrandColor(e.target.value); }} style={{ width: 64, padding: 4 }} />
+            {BRAND_COLORS.map((c) => <button key={c} type="button" className="swatch" style={{ background: c }} aria-label={`צבע ${c}`} onClick={() => { setV((x) => ({ ...x, brand_color: c })); applyBrandColor(c); }} />)}
+          </div>
+        </Field>
+      </div>
+
+      <h3 className="settings-section">שעות נוספות ותעריפים</h3>
+      <p className="subtle" style={{ marginTop: 0 }}>ברירת המחדל לפי חוק שעות עבודה ומנוחה: 8 שעות רגילות ביום (8.6 בשבוע של 5 ימים), שעתיים ראשונות 125%, ומעבר לכך 150%. ביום המנוחה ובחגים 150%, ונוספות בהם 175%/200%. מומלץ לאמת מול רואה החשבון.</p>
+      <div className="form-grid">
+        <Field label="שעות נוספות 125% – כמה שעות" error={errors.ot_tier1_hours}><Input type="number" min="0" step="0.5" value={v.ot_tier1_hours} onChange={set('ot_tier1_hours')} /></Field>
+        <Field label="תעריף נוספות ראשונות" hint="1.25 = 125%" error={errors.rate_ot1}><Input type="number" min="1" step="0.05" value={v.rate_ot1} onChange={set('rate_ot1')} /></Field>
+        <Field label="תעריף נוספות מעבר לכך" hint="1.5 = 150%" error={errors.rate_ot2}><Input type="number" min="1" step="0.05" value={v.rate_ot2} onChange={set('rate_ot2')} /></Field>
+        <Field label="תעריף יום מנוחה / חג" hint="1.5 = 150%" error={errors.rate_rest_day}><Input type="number" min="1" step="0.05" value={v.rate_rest_day} onChange={set('rate_rest_day')} /></Field>
+        <Field label="יום המנוחה השבועי" error={errors.rest_day}>
+          <Select value={v.rest_day} onChange={set('rest_day')}>
+            {['ראשון', 'שני', 'שלישי', 'רביעי', 'חמישי', 'שישי', 'שבת'].map((d, i) => <option key={d} value={String(i)}>{d}</option>)}
+          </Select>
+        </Field>
       </div>
     </Card>
   );
+}
+
+const BRAND_COLORS = ['#4f46e5', '#0ea5e9', '#059669', '#d97706', '#dc2626', '#db2777', '#7c3aed', '#334155'];
+
+/** Resize an uploaded image to fit `max`×`max` and return a data URL (keeps the upload small). */
+function shrinkImage(file, max) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, max / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale); c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(img.src);
+      resolve(c.toDataURL('image/png'));
+    };
+    img.onerror = reject;
+    img.src = URL.createObjectURL(file);
+  });
 }
 
 // ---------------- departments / positions / locations ----------------
 const REF = {
   departments: { title: 'מחלקות', label: 'מחלקה', empty: { name: '', description: '', color: '#6366f1' } },
   positions: { title: 'תפקידים', label: 'תפקיד', empty: { name: '', department_id: '' } },
-  locations: { title: 'סניפים ומיקומים', label: 'מיקום', empty: { name: '', address: '', is_active: true } },
+  locations: { title: 'סניפים ומיקומים', label: 'מיקום', empty: { name: '', address: '', is_active: true, latitude: '', longitude: '', radius_m: 150, require_location: false } },
 };
+
+/** Coordinates + radius for location-based clock-in. "Use my location" fills them from the phone's GPS. */
+function LocationGeo({ edit, setEdit, errors }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const here = () => {
+    if (!navigator.geolocation) { toast.error('הדפדפן לא תומך במיקום'); return; }
+    setBusy(true);
+    navigator.geolocation.getCurrentPosition(
+      (p) => { setBusy(false); setEdit((s) => ({ ...s, latitude: p.coords.latitude.toFixed(6), longitude: p.coords.longitude.toFixed(6) })); toast.success(`המיקום נקלט (דיוק ${Math.round(p.coords.accuracy)} מ׳)`); },
+      () => { setBusy(false); toast.error('לא ניתן לקבל מיקום. אשר/י גישה למיקום ונסה/י שוב.'); },
+      { enableHighAccuracy: true, timeout: 15000 },
+    );
+  };
+  return (
+    <div className="geo-box">
+      <div style={{ fontWeight: 600 }}>החתמה לפי מיקום</div>
+      <p className="subtle" style={{ margin: 0 }}>עמד/י בסניף ולחצ/י על "המיקום הנוכחי שלי". עובדים יוכלו להחתים רק בטווח שהגדרת.</p>
+      <Button icon={MapPin} loading={busy} onClick={here}>המיקום הנוכחי שלי</Button>
+      <div className="grid grid-2">
+        <Field label="קו רוחב" error={errors.latitude}><Input inputMode="decimal" className="ltr" value={edit.latitude ?? ''} onChange={(e) => setEdit((s) => ({ ...s, latitude: e.target.value }))} /></Field>
+        <Field label="קו אורך" error={errors.longitude}><Input inputMode="decimal" className="ltr" value={edit.longitude ?? ''} onChange={(e) => setEdit((s) => ({ ...s, longitude: e.target.value }))} /></Field>
+      </div>
+      <Field label="רדיוס מותר (מטרים)" error={errors.radius_m}><Input type="number" min={30} max={5000} value={edit.radius_m ?? 150} onChange={(e) => setEdit((s) => ({ ...s, radius_m: e.target.value }))} /></Field>
+      <label className="checkbox"><input type="checkbox" checked={!!edit.require_location} onChange={(e) => setEdit((s) => ({ ...s, require_location: e.target.checked }))} />לחייב החתמה מתוך הסניף</label>
+    </div>
+  );
+}
 
 function RefList({ kind }) {
   const { meta, reloadMeta } = useAuth();
@@ -161,7 +252,7 @@ function RefList({ kind }) {
                 <div style={{ fontWeight: 600 }}>{it.name}{kind === 'locations' && !it.is_active && <Badge> לא פעיל</Badge>}</div>
                 <div className="subtle">{kind === 'departments' ? `${it.employee_count} עובדים${it.description ? ` · ${it.description}` : ''}` : kind === 'positions' ? it.department_name || 'ללא מחלקה' : it.address}</div>
               </div>
-              <IconButton icon={Pencil} label="עריכה" small onClick={() => setEdit({ ...it, is_active: kind === 'locations' ? !!it.is_active : undefined })} />
+              <IconButton icon={Pencil} label="עריכה" small onClick={() => setEdit(kind === 'locations' ? { ...it, is_active: !!it.is_active, require_location: !!it.require_location, latitude: it.latitude ?? '', longitude: it.longitude ?? '' } : it)} />
               <IconButton icon={Trash2} label="מחיקה" small onClick={() => remove(it)} />
             </div>
           ))}
@@ -179,6 +270,7 @@ function RefList({ kind }) {
             {kind === 'locations' && <>
               <Field label="כתובת"><Input value={edit.address || ''} onChange={(e) => setEdit((s) => ({ ...s, address: e.target.value }))} /></Field>
               <label className="checkbox"><input type="checkbox" checked={edit.is_active} onChange={(e) => setEdit((s) => ({ ...s, is_active: e.target.checked }))} />פעיל</label>
+              <LocationGeo edit={edit} setEdit={setEdit} errors={errors} />
             </>}
           </div>
         </Modal>
@@ -195,8 +287,13 @@ function UserForm({ user: u, onClose, onSaved }) {
   const [saving, setSaving] = useState(false);
   const { values: v, set, errors, setErrors } = useForm({
     username: u?.username || '', email: u?.email || '', display_name: u?.display_name || '', role: u?.role || 'employee',
-    employee_id: u?.employee_id ?? '', is_active: u ? !!u.is_active : true, password: '',
+    employee_id: u?.employee_id ?? '', is_active: u ? !!u.is_active : true, password: '', location_id: u?.location_id ?? '',
   });
+  const [resetting, setResetting] = useState(false);
+  const resetMfa = async () => {
+    setResetting(true);
+    try { const r = await api.post(`/users/${u.id}/reset-mfa`); toast.success(r.message); onSaved(); } catch (e) { toast.error(e); } finally { setResetting(false); }
+  };
   const save = async () => {
     setSaving(true);
     try {
@@ -215,7 +312,19 @@ function UserForm({ user: u, onClose, onSaved }) {
         <Field label="הרשאה *"><Select value={v.role} onChange={set('role')}>{meta.roles.map((r) => <option key={r.key} value={r.key}>{r.name}</option>)}</Select></Field>
         <Field label="כרטיס עובד משויך" error={errors.employee_id}><Select value={v.employee_id} onChange={set('employee_id')}><option value="">ללא</option>{meta.employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</Select></Field>
         {!u && <Field label="סיסמה ראשונית *" className="full" error={errors.password} hint="לפחות 8 תווים, כולל אות באנגלית וספרה"><Input type="text" value={v.password} onChange={set('password')} invalid={errors.password} dir="ltr" autoComplete="off" /></Field>}
+        {v.role !== 'admin' && meta.locations.length > 0 && (
+          <Field label="סניף" className="full" hint={v.role === 'shift_manager' ? 'מנהל סניף רואה ומנהל רק את העובדים והמשמרות של הסניף שלו' : undefined}>
+            <Select value={v.location_id} onChange={set('location_id')}><option value="">כל הסניפים</option>{meta.locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select>
+          </Field>
+        )}
         <label className="checkbox full"><input type="checkbox" checked={v.is_active} onChange={set('is_active')} />משתמש פעיל (רשאי להתחבר)</label>
+        {u && (u.totp_enabled || u.passkeys > 0) && (
+          <div className="alert tone-info full" style={{ alignItems: 'center' }}>
+            <ShieldCheck size={18} />
+            <span className="grow">למשתמש מופעל {u.totp_enabled ? 'אימות דו-שלבי' : ''}{u.totp_enabled && u.passkeys ? ' ו' : ''}{u.passkeys ? 'כניסה בטביעת אצבע' : ''}. איבד/ה את הטלפון?</span>
+            <Button size="sm" loading={resetting} onClick={resetMfa}>איפוס</Button>
+          </div>
+        )}
       </div>
     </Modal>
   );
@@ -267,6 +376,14 @@ function UserPermissions({ user: u, onClose, onSaved }) {
   );
 }
 
+/** Easy-to-read temporary password: letters + digits, no look-alike characters. */
+function randomPassword() {
+  const letters = 'abcdefghjkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const pick = (set, n) => Array.from(crypto.getRandomValues(new Uint32Array(n)), (x) => set[x % set.length]).join('');
+  return `${pick(letters, 1).toUpperCase()}${pick(letters, 4)}${pick(digits, 4)}`;
+}
+
 function Users() {
   const toast = useToast();
   const { user: me } = useAuth();
@@ -299,6 +416,8 @@ function Users() {
                     <div className="flex flex-wrap" style={{ gap: 4 }}>
                       <Badge tone={u.role === 'admin' ? 'danger' : u.role === 'shift_manager' ? 'warning' : 'neutral'}>{u.role_name}</Badge>
                       {u.custom_permissions > 0 && <Badge tone="primary">+ הרשאות אישיות</Badge>}
+                      {u.location_name && <Badge>{u.location_name}</Badge>}
+                      {u.totp_enabled ? <Badge tone="success">2FA</Badge> : null}
                     </div>
                   </td>
                   <td className="hide-sm">{u.employee_name || '—'}</td>
@@ -322,7 +441,8 @@ function Users() {
       {permsFor && <UserPermissions user={permsFor} onClose={() => setPermsFor(null)} onSaved={() => reload({ silent: true })} />}
       {pw && (
         <Modal open onClose={() => setPw(null)} title={`סיסמה חדשה ל${pw.display_name}`} footer={<><Button onClick={() => setPw(null)}>ביטול</Button><Button variant="primary" onClick={setPassword}>עדכון</Button></>}>
-          <Field label="סיסמה חדשה" error={pwErr} hint="המשתמש ינותק מכל המכשירים"><Input value={newPw} onChange={(e) => setNewPw(e.target.value)} dir="ltr" autoComplete="off" /></Field>
+          <Field label="סיסמה חדשה" error={pwErr} hint="הסיסמה מוצגת לכם כדי שתוכלו למסור אותה לעובד. המשתמש ינותק מכל המכשירים."><Input value={newPw} onChange={(e) => setNewPw(e.target.value)} dir="ltr" autoComplete="off" /></Field>
+          <div className="mt"><Button size="sm" icon={RotateCcw} onClick={() => setNewPw(randomPassword())}>יצירת סיסמה אקראית</Button></div>
         </Modal>
       )}
       {confirmDialog}
@@ -453,8 +573,9 @@ export default function SettingsPage() {
   const [params, setParams] = useSearchParams();
   const tabs = [
     { value: 'profile', label: 'הפרופיל שלי', icon: KeyRound },
+    { value: 'security', label: 'אבטחה', icon: Fingerprint },
     ...(can('settings.manage') ? [{ value: 'business', label: 'הגדרות עסק', icon: Building2 }, { value: 'structure', label: 'מבנה ארגוני', icon: Network }] : []),
-    ...(can('users.manage') ? [{ value: 'users', label: 'משתמשים', icon: UserCog }, { value: 'permissions', label: 'הרשאות', icon: ShieldCheck }] : []),
+    ...(can('users.manage') ? [{ value: 'users', label: 'משתמשים', icon: UserCog }, { value: 'permissions', label: 'הרשאות', icon: ShieldCheck }, { value: 'backup', label: 'גיבוי', icon: CloudUpload }] : []),
     ...(can('audit.view') ? [{ value: 'audit', label: 'יומן פעולות', icon: History }] : []),
   ];
   const tab = tabs.some((t) => t.value === params.get('tab')) ? params.get('tab') : tabs[0].value;
@@ -463,11 +584,13 @@ export default function SettingsPage() {
       <PageHeader title="הגדרות" />
       <Tabs tabs={tabs} value={tab} onChange={(t) => setParams({ tab: t }, { replace: true })} />
       {tab === 'profile' && <Profile />}
+      {tab === 'security' && <SecuritySettings />}
       {tab === 'business' && <Business />}
       {tab === 'structure' && <div className="grid grid-3"><RefList kind="departments" /><RefList kind="positions" /><RefList kind="locations" /></div>}
       {tab === 'users' && <Users />}
       {tab === 'permissions' && <Permissions />}
       {tab === 'audit' && <Audit />}
+      {tab === 'backup' && <BackupSettings />}
     </>
   );
 }

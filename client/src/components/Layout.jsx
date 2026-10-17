@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate, Link } from 'react-router';
 import {
   LayoutDashboard, Users, CalendarDays, Clock, ListTodo, Inbox, BarChart3, Bell, Settings, Menu, Search, Moon, Sun,
-  LogOut, KeyRound, ChevronDown, CalendarCheck, X,
+  LogOut, KeyRound, ChevronDown, CalendarCheck, X, Receipt, Megaphone,
 } from 'lucide-react';
 import { useAuth } from '../lib/auth.jsx';
 import { useTheme } from '../lib/theme.js';
@@ -11,6 +11,8 @@ import { Avatar, IconButton } from './ui.jsx';
 import GlobalSearch from './GlobalSearch.jsx';
 import NotificationBell from './NotificationBell.jsx';
 import { InstallBanner, InstallButton } from './InstallApp.jsx';
+import { BrandLogo } from '../lib/branding.jsx';
+import AckGate from './AckGate.jsx';
 
 /** Navigation items; `perm` = any of these permissions, `employee` = needs an employee card. */
 export const NAV = [
@@ -22,6 +24,8 @@ export const NAV = [
   { to: '/tasks', label: 'משימות', icon: ListTodo },
   { to: '/requests', label: 'בקשות', icon: Inbox, badge: 'requests' },
   { to: '/reports', label: 'דוחות', icon: BarChart3, perm: ['reports.view'] },
+  { to: '/my-hours', label: 'תלוש שעות', icon: Receipt, show: (user, can) => !!user.employee_id || can('reports.view') },
+  { to: '/announcements', label: 'לוח הודעות', icon: Megaphone, badge: 'announcements' },
   { to: '/notifications', label: 'התראות', icon: Bell, badge: 'notifications' },
   { to: '/settings', label: 'הגדרות', icon: Settings },
 ];
@@ -33,18 +37,22 @@ export default function Layout() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [userMenu, setUserMenu] = useState(false);
   const [unread, setUnread] = useState(0);
+  const [annUnread, setAnnUnread] = useState(0);
   const location = useLocation();
   const navigate = useNavigate();
   const userMenuRef = useRef(null);
 
-  const items = NAV.filter((n) => (!n.perm || can(...n.perm)) && (!n.employee || user.employee_id));
+  const items = NAV.filter((n) => (!n.perm || can(...n.perm)) && (!n.employee || user.employee_id) && (!n.show || n.show(user, can)));
 
   useEffect(() => { setMenuOpen(false); setUserMenu(false); }, [location.pathname]);
 
   // Poll unread notifications
   useEffect(() => {
     let alive = true;
-    const load = () => api.get('/notifications/unread-count').then((r) => alive && setUnread(r.unread)).catch(() => {});
+    const load = () => {
+      api.get('/notifications/unread-count').then((r) => alive && setUnread(r.unread)).catch(() => {});
+      api.get('/announcements/unread-count').then((r) => alive && setAnnUnread(r.unread)).catch(() => {});
+    };
     load();
     const t = setInterval(load, 30000);
     window.addEventListener('notifications:changed', load);
@@ -73,7 +81,7 @@ export default function Layout() {
     <div className="app">
       <aside className={`sidebar ${menuOpen ? 'open' : ''}`} aria-label="תפריט ראשי">
         <div className="sidebar-brand">
-          <div className="brand-logo"><CalendarDays size={20} /></div>
+          <BrandLogo fallback={CalendarDays} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div className="brand-name">Shiftly</div>
             <div className="brand-sub" title={meta?.settings?.business_name}>{meta?.settings?.business_name || 'ניהול כוח אדם'}</div>
@@ -86,6 +94,7 @@ export default function Layout() {
               <n.icon size={19} />
               <span>{n.label}</span>
               {n.badge === 'notifications' && unread > 0 && <span className="badge tone-danger nav-badge">{unread}</span>}
+              {n.badge === 'announcements' && annUnread > 0 && <span className="badge tone-danger nav-badge">{annUnread}</span>}
             </NavLink>
           ))}
         </nav>
@@ -138,6 +147,7 @@ export default function Layout() {
         <main className="content">
           <InstallBanner />
           <Outlet />
+          <AckGate />
         </main>
       </div>
 

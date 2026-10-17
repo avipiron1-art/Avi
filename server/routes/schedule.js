@@ -33,6 +33,20 @@ function weekState(ws) {
   return getDb().prepare('SELECT * FROM schedule_weeks WHERE week_start = ?').get(ws) || { week_start: ws, status: 'draft', published_at: null };
 }
 
+/** How many workers / shift leads a shift needs on a date (per-day override, else the shift type default). */
+function requirementsFor(ws) {
+  const db = getDb();
+  const overrides = db.prepare('SELECT * FROM slot_overrides WHERE date BETWEEN ? AND ?').all(ws, addDays(ws, 6));
+  const map = new Map();
+  for (const d of weekDays(ws)) {
+    for (const t of activeTypes()) {
+      const o = overrides.find((x) => x.date === d && x.shift_type_id === t.id);
+      map.set(`${d}|${t.id}`, { date: d, shift_type_id: t.id, required_workers: o ? o.required_workers : t.required_workers, required_leads: o ? o.required_leads : t.required_leads, override: !!o });
+    }
+  }
+  return map;
+}
+
 // ======================= shift types =======================
 router.get('/shift-types', (req, res) => {
   const all = req.query.all === '1' && req.can('schedule.manage');
@@ -45,13 +59,15 @@ const typeSchema = z.object({
   end_time: zTime,
   sort_order: z.coerce.number().int().min(0).max(99).default(0),
   is_active: z.boolean().default(true),
-});
+  required_workers: z.coerce.number().int().min(0).max(50).default(0),
+  required_leads: z.coerce.number().int().min(0).max(10).default(0),
+}).refine((t) => t.required_leads <= t.required_workers, { message: 'מספר האחמ"שים לא יכול להיות גדול ממספר העובדים', path: ['required_leads'] });
 
 router.post('/shift-types', requirePerm('schedule.manage'), ah((req, res) => {
   const t = validate(typeSchema, req.body);
   if (t.start_time === t.end_time) throw badRequest('שעת הסיום חייבת להיות שונה משעת ההתחלה', { fields: { end_time: 'זהה לשעת ההתחלה' } });
-  const id = getDb().prepare('INSERT INTO shift_types (name, start_time, end_time, sort_order, is_active) VALUES (?, ?, ?, ?, ?)')
-    .run(t.name, t.start_time, t.end_time, t.sort_order, t.is_active ? 1 : 0).lastInsertRowid;
+  const id = getDb().prepare('INSERT INTO shift_types (name, start_time, end_time, sort_order, is_active, required_workers, required_leads) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(t.name, t.start_time, t.end_time, t.sort_order, t.is_active ? 1 : 0, t.required_workers, t.required_leads).lastInsertRowid;
   audit(req, { action: 'shift_type.create', entityType: 'shift_type', entityId: id, description: `${req.user.display_name} הגדיר/ה משמרת "${t.name}" ${t.start_time}–${t.end_time}`, newValue: t });
   res.status(201).json({ id, message: 'המשמרת נוספה' });
 }));
@@ -63,8 +79,8 @@ router.put('/shift-types/:id', requirePerm('schedule.manage'), ah((req, res) => 
   if (!before) throw notFound('המשמרת לא נמצאה');
   const t = validate(typeSchema, req.body);
   if (t.start_time === t.end_time) throw badRequest('שעת הסיום חייבת להיות שונה משעת ההתחלה', { fields: { end_time: 'זהה לשעת ההתחלה' } });
-  db.prepare('UPDATE shift_types SET name = ?, start_time = ?, end_time = ?, sort_order = ?, is_active = ? WHERE id = ?')
-    .run(t.name, t.start_time, t.end_time, t.sort_order, t.is_active ? 1 : 0, id);
+  db.prepare('UPDATE shift_types SET name = ?, start_time = ?, end_time = ?, sort_order = ?, is_active = ?, required_workers = ?, required_leads = ? WHERE id = ?')
+    .run(t.name, t.start_time, t.end_time, t.sort_order, t.is_active ? 1 : 0, t.required_workers, t.required_leads, id);
   audit(req, {
     action: 'shift_type.update', entityType: 'shift_type', entityId: id,
     description: `${req.user.display_name} עדכן/ה את המשמרת "${t.name}" (${before.start_time}–${before.end_time} → ${t.start_time}–${t.end_time})`,
@@ -129,11 +145,11 @@ router.get('/board', requirePerm('schedule.manage'), (req, res) => {
   const end = addDays(ws, 6);
   const employees = db.prepare(
     `SELECT e.id, e.first_name || ' ' || e.last_name AS name, e.avatar, p.name AS position_name, d.name AS department_name,
-            s.submitted_at, s.note
+            e.can_lead, e.location_id, s.submitted_at, s.note
      FROM employees e LEFT JOIN positions p ON p.id = e.position_id LEFT JOIN departments d ON d.id = e.department_id
      LEFT JOIN schedule_submissions s ON s.employee_id = e.id AND s.week_start = ?
-     WHERE e.status = 'active' ORDER BY e.first_name, e.last_name`,
-  ).all(ws);
+     WHERE e.status = 'active' ${req.user.location_id ? 'AND (e.location_id = ? OR e.location_id IS NULL)' : ''} ORDER BY e.first_name, e.last_name`,
+  ).all(ws, ...(req.user.location_id ? [req.user.location_id] : []));
   // Approved leave in this week, so the manager sees it on the board
   const leave = db.prepare(
     `SELECT employee_id, start_date, COALESCE(end_date, start_date) AS end_date FROM requests
@@ -145,7 +161,9 @@ router.get('/board', requirePerm('schedule.manage'), (req, res) => {
     types: activeTypes(),
     employees,
     prefs: db.prepare('SELECT employee_id, date, shift_type_id, preference FROM shift_preferences WHERE date BETWEEN ? AND ?').all(ws, end),
-    assignments: db.prepare('SELECT date, shift_type_id, employee_id, is_lead FROM schedule_assignments WHERE date BETWEEN ? AND ?').all(ws, end),
+    assignments: db.prepare('SELECT date, shift_type_id, employee_id, is_lead, status, claimed_at FROM schedule_assignments WHERE date BETWEEN ? AND ?').all(ws, end),
+    requirements: [...requirementsFor(ws).values()],
+    loaded_at: new Date().toISOString(),
     leave,
     // shifts added manually in the calendar, so the board can warn about double booking
     busy: db.prepare(
@@ -158,11 +176,22 @@ router.get('/board', requirePerm('schedule.manage'), (req, res) => {
 
 const assignmentsSchema = z.object({
   week_start: zDate,
-  assignments: z.array(z.object({ date: zDate, shift_type_id: zId, employee_id: zId, is_lead: z.boolean().default(false) })).max(2000),
+  assignments: z.array(z.object({
+    date: zDate, shift_type_id: zId, employee_id: zId, is_lead: z.boolean().default(false),
+    status: z.enum(['approved', 'claimed']).default('approved'),
+  })).max(2000),
+  loaded_at: z.string().max(40).optional(),
 });
 
-function saveAssignments(ws, list) {
+function saveAssignments(ws, list, loadedAt) {
   const db = getDb();
+  // Claims employees made after the manager opened the board must not be wiped by this save
+  const existing = db.prepare('SELECT * FROM schedule_assignments WHERE date BETWEEN ? AND ?').all(ws, addDays(ws, 6));
+  const key = (a) => `${a.date}|${a.shift_type_id}|${a.employee_id}`;
+  const incoming = new Set(list.map(key));
+  const loaded = loadedAt ? loadedAt.replace('T', ' ').replace('Z', '').slice(0, 23) : null; // ms precision, same format as claimed_at
+  const late = existing.filter((a) => a.status === 'claimed' && !incoming.has(key(a)) && loaded && a.claimed_at && a.claimed_at > loaded);
+  const claimedAt = new Map(existing.map((a) => [key(a), a.claimed_at]));
   const days = new Set(weekDays(ws));
   const typeIds = new Set(activeTypes().map((t) => t.id));
   const active = new Set(db.prepare("SELECT id FROM employees WHERE status = 'active'").all().map((e) => e.id));
@@ -179,19 +208,29 @@ function saveAssignments(ws, list) {
   }
   db.transaction(() => {
     db.prepare('DELETE FROM schedule_assignments WHERE date BETWEEN ? AND ?').run(ws, addDays(ws, 6));
-    const ins = db.prepare('INSERT OR REPLACE INTO schedule_assignments (date, shift_type_id, employee_id, is_lead) VALUES (?, ?, ?, ?)');
-    for (const a of list) ins.run(a.date, a.shift_type_id, a.employee_id, a.is_lead ? 1 : 0);
+    const ins = db.prepare('INSERT OR REPLACE INTO schedule_assignments (date, shift_type_id, employee_id, is_lead, status, claimed_at) VALUES (?, ?, ?, ?, ?, ?)');
+    for (const a of list) ins.run(a.date, a.shift_type_id, a.employee_id, a.is_lead ? 1 : 0, a.status || 'approved', claimedAt.get(key(a)) || null);
+    for (const a of late) ins.run(a.date, a.shift_type_id, a.employee_id, a.is_lead, a.status, a.claimed_at);
     db.prepare(
       `INSERT INTO schedule_weeks (week_start, status, updated_at) VALUES (?, 'draft', datetime('now'))
        ON CONFLICT(week_start) DO UPDATE SET status = 'draft', updated_at = excluded.updated_at`,
     ).run(ws);
   })();
+  // Tell employees what happened to their picks
+  const byKey = new Map(list.map((a) => [key(a), a]));
+  const types = new Map(activeTypes().map((t) => [t.id, t.name]));
+  for (const a of existing.filter((x) => x.status === 'claimed' && !late.includes(x))) {
+    const now = byKey.get(key(a));
+    const what = `${types.get(a.shift_type_id) || 'משמרת'} · ${fmt(a.date)}`;
+    if (!now) notifyEmployee(a.employee_id, { type: 'request_rejected', title: 'המשמרת שבחרת לא אושרה', body: what, link: `/schedule?tab=open&week=${ws}` });
+    else if (now.status === 'approved') notifyEmployee(a.employee_id, { type: 'request_approved', title: 'המשמרת שבחרת אושרה', body: what, link: `/schedule?tab=open&week=${ws}` });
+  }
 }
 
 router.put('/board', requirePerm('schedule.manage'), ah((req, res) => {
   const body = validate(assignmentsSchema, req.body);
   const ws = startOfWeek(body.week_start);
-  saveAssignments(ws, body.assignments);
+  saveAssignments(ws, body.assignments, body.loaded_at);
   res.json({ state: weekState(ws), message: 'הטיוטה נשמרה' });
 }));
 
@@ -200,7 +239,10 @@ router.post('/publish', requirePerm('schedule.manage'), ah((req, res) => {
   const body = validate(assignmentsSchema, req.body);
   const ws = startOfWeek(body.week_start);
   if (addDays(ws, 6) < todayLocal()) throw badRequest('לא ניתן לפרסם סידור לשבוע שעבר');
-  saveAssignments(ws, body.assignments);
+  saveAssignments(ws, body.assignments, body.loaded_at);
+  // Only approved assignments become shifts; pending claims stay on the board
+  const pendingClaims = body.assignments.filter((a) => a.status === 'claimed').length;
+  body.assignments = body.assignments.filter((a) => a.status !== 'claimed');
   const db = getDb();
   const types = new Map(activeTypes().map((t) => [t.id, t]));
   const now = nowLocal();
@@ -279,7 +321,97 @@ router.post('/publish', requirePerm('schedule.manage'), ah((req, res) => {
     action: 'schedule.publish', entityType: 'schedule', description: `${req.user.display_name} אישר/ה ופרסם/ה את סידור העבודה לשבוע ${fmt(ws)}`,
     newValue: { week_start: ws, assignments: body.assignments.length, ...stats },
   });
+  if (pendingClaims) warnings.unshift(`${pendingClaims} בחירות של עובדים עדיין ממתינות לאישור ולא פורסמו`);
   res.json({ state: weekState(ws), stats, warnings, message: 'הסידור אושר ופורסם לעובדים' });
+}));
+
+// ======================= staffing requirements =======================
+router.put('/requirements', requirePerm('schedule.manage'), ah((req, res) => {
+  const d = validate(z.object({
+    date: zDate, shift_type_id: zId,
+    required_workers: z.coerce.number().int().min(0).max(50), required_leads: z.coerce.number().int().min(0).max(10),
+    reset: z.boolean().optional(),
+  }).refine((x) => x.required_leads <= x.required_workers, { message: 'מספר האחמ"שים לא יכול להיות גדול ממספר העובדים', path: ['required_leads'] }), req.body);
+  const db = getDb();
+  if (d.reset) db.prepare('DELETE FROM slot_overrides WHERE date = ? AND shift_type_id = ?').run(d.date, d.shift_type_id);
+  else {
+    db.prepare(
+      `INSERT INTO slot_overrides (date, shift_type_id, required_workers, required_leads) VALUES (?, ?, ?, ?)
+       ON CONFLICT(date, shift_type_id) DO UPDATE SET required_workers = excluded.required_workers, required_leads = excluded.required_leads`,
+    ).run(d.date, d.shift_type_id, d.required_workers, d.required_leads);
+  }
+  res.json({ requirements: [...requirementsFor(startOfWeek(d.date)).values()], message: 'הדרישה עודכנה' });
+}));
+
+// ======================= first-come shift claims (employees) =======================
+function openSlots(ws, employeeId) {
+  const db = getDb();
+  const rows = db.prepare(
+    `SELECT a.*, e.first_name || ' ' || e.last_name AS name FROM schedule_assignments a JOIN employees e ON e.id = a.employee_id
+     WHERE a.date BETWEEN ? AND ?`,
+  ).all(ws, addDays(ws, 6));
+  return [...requirementsFor(ws).values()].map((r) => {
+    const here = rows.filter((a) => a.date === r.date && a.shift_type_id === r.shift_type_id);
+    const mine = here.find((a) => a.employee_id === employeeId);
+    return {
+      ...r,
+      taken_leads: here.filter((a) => a.is_lead).length,
+      taken_regular: here.filter((a) => !a.is_lead).length,
+      people: here.map((a) => ({ name: a.name, is_lead: !!a.is_lead, status: a.status })),
+      mine: mine ? { status: mine.status, is_lead: !!mine.is_lead } : null,
+    };
+  });
+}
+
+router.get('/open', requireEmployee, (req, res) => {
+  const ws = parseWeek(req.query.week);
+  const state = weekState(ws);
+  const emp = getDb().prepare('SELECT can_lead FROM employees WHERE id = ?').get(req.user.employee_id);
+  res.json({
+    week_start: ws, days: weekDays(ws), types: activeTypes(), slots: openSlots(ws, req.user.employee_id),
+    can_lead: !!emp?.can_lead, status: state.status, locked: state.status === 'published' || addDays(ws, 6) < todayLocal(),
+  });
+});
+
+router.post('/claim', requireEmployee, ah((req, res) => {
+  const d = validate(z.object({ date: zDate, shift_type_id: zId, as_lead: z.boolean().default(false) }), req.body);
+  const ws = startOfWeek(d.date);
+  const db = getDb();
+  const empId = req.user.employee_id;
+  db.transaction(() => {
+    if (weekState(ws).status === 'published') throw badRequest('הסידור לשבוע זה כבר פורסם');
+    if (d.date < todayLocal()) throw badRequest('לא ניתן לבחור משמרת שעברה');
+    const emp = db.prepare('SELECT status, can_lead FROM employees WHERE id = ?').get(empId);
+    if (emp.status !== 'active') throw badRequest('רק עובד פעיל יכול לבחור משמרות');
+    if (d.as_lead && !emp.can_lead) throw badRequest('אינך מוגדר/ת כאחמ"ש. פנו למנהל.');
+    const slot = openSlots(ws, empId).find((x) => x.date === d.date && x.shift_type_id === d.shift_type_id);
+    if (!slot || !slot.required_workers) throw badRequest('המשמרת הזו לא פתוחה לבחירה');
+    if (slot.mine) throw badRequest('כבר בחרת את המשמרת הזו');
+    if (db.prepare('SELECT 1 FROM schedule_assignments WHERE employee_id = ? AND date = ?').get(empId, d.date)) throw badRequest('כבר יש לך משמרת ביום הזה');
+    const free = d.as_lead ? slot.required_leads - slot.taken_leads : (slot.required_workers - slot.required_leads) - slot.taken_regular;
+    if (free <= 0) throw badRequest(d.as_lead ? 'מקום האחמ"ש כבר נתפס' : 'כל המקומות במשמרת הזו כבר נתפסו');
+    db.prepare("INSERT INTO schedule_assignments (date, shift_type_id, employee_id, is_lead, status, claimed_at) VALUES (?, ?, ?, ?, 'claimed', strftime('%Y-%m-%d %H:%M:%f', 'now'))")
+      .run(d.date, d.shift_type_id, empId, d.as_lead ? 1 : 0);
+    db.prepare(
+      `INSERT INTO schedule_weeks (week_start, status, updated_at) VALUES (?, 'draft', datetime('now'))
+       ON CONFLICT(week_start) DO UPDATE SET updated_at = excluded.updated_at`,
+    ).run(ws);
+    return slot;
+  })();
+  const type = activeTypes().find((t) => t.id === d.shift_type_id);
+  audit(req, { action: 'schedule.claim', entityType: 'employee', entityId: empId, description: `${req.user.display_name} בחר/ה משמרת ${type?.name} ב-${fmt(d.date)}${d.as_lead ? ' כאחמ"ש' : ''}`, newValue: d });
+  notifyPermission('schedule.manage', { type: 'shift_claimed', title: `${req.user.display_name} בחר/ה משמרת`, body: `${type?.name} · ${fmt(d.date)}${d.as_lead ? ' · כאחמ"ש' : ''} – ממתין לאישור`, link: `/schedule?tab=board&week=${ws}` }, { exceptUserId: req.user.id });
+  res.status(201).json({ slots: openSlots(ws, empId), message: 'המשמרת נשמרה עבורך וממתינה לאישור המנהל' });
+}));
+
+router.delete('/claim', requireEmployee, ah((req, res) => {
+  const d = validate(z.object({ date: zDate, shift_type_id: zId }), req.query);
+  const ws = startOfWeek(d.date);
+  const r = getDb().prepare("DELETE FROM schedule_assignments WHERE date = ? AND shift_type_id = ? AND employee_id = ? AND status = 'claimed'")
+    .run(d.date, d.shift_type_id, req.user.employee_id);
+  if (!r.changes) throw badRequest('אפשר לבטל רק בחירה שעדיין לא אושרה. לשינוי משמרת מאושרת פנו למנהל.');
+  audit(req, { action: 'schedule.unclaim', entityType: 'employee', entityId: req.user.employee_id, description: `${req.user.display_name} ביטל/ה בחירת משמרת ב-${fmt(d.date)}` });
+  res.json({ slots: openSlots(ws, req.user.employee_id), message: 'הבחירה בוטלה' });
 }));
 
 // ======================= published schedule (everyone) =======================

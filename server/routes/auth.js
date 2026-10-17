@@ -8,6 +8,14 @@ import { validate, z, zPassword } from '../lib/validate.js';
 import { startSession, endSession, requireAuth, hashToken, newToken, csrf } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
 import { sendMail } from '../services/mailer.js';
+import QRCode from 'qrcode';
+import {
+  generateRegistrationOptions, verifyRegistrationResponse, generateAuthenticationOptions, verifyAuthenticationResponse,
+} from '@simplewebauthn/server';
+import {
+  newTotpSecret, verifyTotp, otpauthUrl, newRecoveryCodes, useRecoveryCode, putChallenge, getChallenge, dropChallenge, relyingParty,
+} from '../services/mfa.js';
+import { getSetting } from '../services/settings.js';
 
 const router = Router();
 
@@ -39,6 +47,8 @@ export function publicUser(user) {
     role: user.role,
     role_name: user.role_name,
     employee_id: user.employee_id,
+    location_id: user.location_id ?? null,
+    lead_scope: user.lead_scope || null, // on duty as shift lead right now (temporary rights)
     permissions: [...user.permissions],
   };
 }
@@ -79,15 +89,191 @@ router.post('/login', loginLimiter, ah(async (req, res) => {
   }
   if (!user.is_active) throw unauthorized('החשבון אינו פעיל. פנו למנהל המערכת.');
 
-  db.prepare("UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = datetime('now') WHERE id = ?").run(user.id);
+  db.prepare('UPDATE users SET failed_attempts = 0, locked_until = NULL WHERE id = ?').run(user.id);
+  if (user.totp_enabled) {
+    // Step 2: the password was right, now ask for the code from the authenticator app.
+    const mfaToken = putChallenge({ kind: 'mfa', userId: user.id, remember: body.remember, tries: 0 });
+    return res.json({ mfa_required: true, mfa_token: mfaToken });
+  }
+  finishLogin(req, res, user, body.remember, 'סיסמה');
+}));
+
+function finishLogin(req, res, user, remember, method) {
+  const db = getDb();
+  db.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(user.id);
   // Drop expired sessions opportunistically
   db.prepare("DELETE FROM sessions WHERE expires_at < datetime('now')").run();
   endSession(req, res);
-  startSession(req, res, user.id, body.remember);
+  startSession(req, res, user.id, remember);
   audit({ user: { id: user.id, display_name: user.display_name }, ip: req.ip }, {
-    action: 'auth.login', entityType: 'user', entityId: user.id, description: `${user.display_name} התחבר/ה למערכת`,
+    action: 'auth.login', entityType: 'user', entityId: user.id, description: `${user.display_name} התחבר/ה למערכת (${method})`,
   });
   res.json({ ok: true });
+}
+
+// Step 2 of login: 6-digit code or a one-time recovery code.
+router.post('/login/mfa', loginLimiter, ah(async (req, res) => {
+  const body = validate(z.object({ mfa_token: z.string().min(10).max(100), code: z.string().trim().min(6).max(20) }), req.body);
+  const ch = getChallenge(body.mfa_token);
+  if (!ch || ch.kind !== 'mfa') throw unauthorized('פג הזמן להזנת הקוד. התחברו מחדש.');
+  const db = getDb();
+  const user = db.prepare('SELECT u.*, r.key AS role FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?').get(ch.userId);
+  if (!user || !user.is_active || !user.totp_enabled) { dropChallenge(body.mfa_token); throw unauthorized('לא ניתן להשלים את ההתחברות'); }
+  const code = body.code.replace(/\s/g, '');
+  const step = verifyTotp(user.totp_secret, code, user.totp_last_step);
+  let method = 'סיסמה + קוד אימות';
+  if (step != null) {
+    db.prepare('UPDATE users SET totp_last_step = ? WHERE id = ?').run(step, user.id);
+  } else {
+    const rest = useRecoveryCode(user.recovery_codes, code);
+    if (rest == null) {
+      ch.tries += 1;
+      if (ch.tries >= 5) { dropChallenge(body.mfa_token); throw unauthorized('יותר מדי קודים שגויים. התחברו מחדש.'); }
+      throw badRequest('הקוד שגוי. בדקו את הקוד העדכני באפליקציית האימות.', { fields: { code: 'קוד שגוי' } });
+    }
+    db.prepare('UPDATE users SET recovery_codes = ? WHERE id = ?').run(rest, user.id);
+    method = 'קוד שחזור';
+    audit({ user: { id: user.id, display_name: user.display_name }, ip: req.ip }, { action: 'auth.recovery_code_used', entityType: 'user', entityId: user.id, description: `${user.display_name} התחבר/ה עם קוד שחזור` });
+  }
+  dropChallenge(body.mfa_token);
+  finishLogin(req, res, user, ch.remember, method);
+}));
+
+// ------------------------- account security -------------------------
+const passwordOk = async (userId, password) => {
+  const u = getDb().prepare('SELECT password_hash FROM users WHERE id = ?').get(userId);
+  return !!password && bcrypt.compare(password, u.password_hash);
+};
+const requirePassword = async (req, password) => {
+  if (!(await passwordOk(req.user.id, password))) throw badRequest('הסיסמה שגויה', { fields: { password: 'הסיסמה שגויה' } });
+};
+
+router.get('/security', requireAuth, (req, res) => {
+  const db = getDb();
+  const u = db.prepare('SELECT totp_enabled, recovery_codes FROM users WHERE id = ?').get(req.user.id);
+  let left = 0;
+  try { left = JSON.parse(u.recovery_codes || '[]').length; } catch { /* ignore */ }
+  const passkeys = db.prepare('SELECT id, name, created_at, last_used_at FROM webauthn_credentials WHERE user_id = ? ORDER BY id').all(req.user.id);
+  res.json({ totp_enabled: !!u.totp_enabled, recovery_left: left, passkeys });
+});
+
+router.post('/2fa/setup', requireAuth, csrf, ah(async (req, res) => {
+  const { password } = validate(z.object({ password: z.string().max(200).default('') }), req.body);
+  await requirePassword(req, password);
+  const db = getDb();
+  if (db.prepare('SELECT totp_enabled FROM users WHERE id = ?').get(req.user.id).totp_enabled) throw badRequest('אימות דו-שלבי כבר פעיל');
+  const secret = newTotpSecret();
+  db.prepare('UPDATE users SET totp_secret = ?, totp_last_step = NULL WHERE id = ?').run(secret, req.user.id);
+  const url = otpauthUrl(secret, req.user.username, getSetting('business_name') || 'Shiftly');
+  res.json({ secret, otpauth_url: url, qr: await QRCode.toDataURL(url, { margin: 1, width: 220 }) });
+}));
+
+router.post('/2fa/enable', requireAuth, csrf, ah((req, res) => {
+  const { code } = validate(z.object({ code: z.string().trim().max(10) }), req.body);
+  const db = getDb();
+  const u = db.prepare('SELECT totp_secret, totp_enabled FROM users WHERE id = ?').get(req.user.id);
+  if (u.totp_enabled) throw badRequest('אימות דו-שלבי כבר פעיל');
+  if (!u.totp_secret) throw badRequest('יש להתחיל את ההגדרה מחדש');
+  const step = verifyTotp(u.totp_secret, code.replace(/\s/g, ''));
+  if (step == null) throw badRequest('הקוד שגוי. ודאו שהשעה בטלפון מכוונת אוטומטית ונסו את הקוד העדכני.', { fields: { code: 'קוד שגוי' } });
+  const rc = newRecoveryCodes();
+  db.prepare('UPDATE users SET totp_enabled = 1, totp_last_step = ?, recovery_codes = ? WHERE id = ?').run(step, rc.stored, req.user.id);
+  audit(req, { action: 'auth.2fa_enabled', entityType: 'user', entityId: req.user.id, description: `${req.user.display_name} הפעיל/ה אימות דו-שלבי` });
+  res.json({ ok: true, recovery_codes: rc.plain, message: 'אימות דו-שלבי הופעל' });
+}));
+
+router.post('/2fa/disable', requireAuth, csrf, ah(async (req, res) => {
+  const { password } = validate(z.object({ password: z.string().max(200).default('') }), req.body);
+  await requirePassword(req, password);
+  getDb().prepare('UPDATE users SET totp_enabled = 0, totp_secret = NULL, recovery_codes = NULL, totp_last_step = NULL WHERE id = ?').run(req.user.id);
+  audit(req, { action: 'auth.2fa_disabled', entityType: 'user', entityId: req.user.id, description: `${req.user.display_name} כיבה/תה אימות דו-שלבי` });
+  res.json({ ok: true, message: 'אימות דו-שלבי כובה' });
+}));
+
+router.post('/2fa/recovery', requireAuth, csrf, ah(async (req, res) => {
+  const { password } = validate(z.object({ password: z.string().max(200).default('') }), req.body);
+  await requirePassword(req, password);
+  const db = getDb();
+  if (!db.prepare('SELECT totp_enabled FROM users WHERE id = ?').get(req.user.id).totp_enabled) throw badRequest('אימות דו-שלבי לא פעיל');
+  const rc = newRecoveryCodes();
+  db.prepare('UPDATE users SET recovery_codes = ? WHERE id = ?').run(rc.stored, req.user.id);
+  audit(req, { action: 'auth.recovery_regenerated', entityType: 'user', entityId: req.user.id, description: `${req.user.display_name} יצר/ה קודי שחזור חדשים` });
+  res.json({ recovery_codes: rc.plain });
+}));
+
+// ------------------------- passkeys (fingerprint / Face ID) -------------------------
+router.post('/passkeys/register/options', requireAuth, csrf, ah(async (req, res) => {
+  const { rpID } = relyingParty(req);
+  const existing = getDb().prepare('SELECT credential_id, transports FROM webauthn_credentials WHERE user_id = ?').all(req.user.id);
+  const options = await generateRegistrationOptions({
+    rpName: getSetting('business_name') || 'Shiftly', rpID,
+    userName: req.user.username, userDisplayName: req.user.display_name,
+    userID: new TextEncoder().encode(`u${req.user.id}`),
+    attestationType: 'none',
+    excludeCredentials: existing.map((c) => ({ id: c.credential_id, transports: c.transports ? JSON.parse(c.transports) : undefined })),
+    authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+  });
+  const challengeId = putChallenge({ kind: 'reg', userId: req.user.id, challenge: options.challenge });
+  res.json({ options, challenge_id: challengeId });
+}));
+
+router.post('/passkeys/register/verify', requireAuth, csrf, ah(async (req, res) => {
+  const body = validate(z.object({ challenge_id: z.string().max(100), name: z.string().trim().max(60).optional(), response: z.any() }), req.body);
+  const ch = getChallenge(body.challenge_id);
+  if (!ch || ch.kind !== 'reg' || ch.userId !== req.user.id) throw badRequest('פג הזמן. נסו שוב.');
+  dropChallenge(body.challenge_id);
+  const { rpID, origin } = relyingParty(req);
+  let v;
+  try {
+    v = await verifyRegistrationResponse({ response: body.response, expectedChallenge: ch.challenge, expectedOrigin: origin, expectedRPID: rpID, requireUserVerification: true });
+  } catch (e) { throw badRequest(`לא ניתן לאמת את המכשיר: ${e.message}`); }
+  if (!v.verified) throw badRequest('לא ניתן לאמת את המכשיר');
+  const c = v.registrationInfo.credential;
+  const ua = String(req.get('user-agent') || '');
+  const guess = /iPhone|iPad/.test(ua) ? 'אייפון' : /Android/.test(ua) ? 'אנדרואיד' : /Mac/.test(ua) ? 'מק' : /Windows/.test(ua) ? 'מחשב Windows' : 'מכשיר';
+  getDb().prepare('INSERT INTO webauthn_credentials (user_id, credential_id, public_key, counter, transports, name) VALUES (?, ?, ?, ?, ?, ?)')
+    .run(req.user.id, c.id, Buffer.from(c.publicKey).toString('base64url'), c.counter, JSON.stringify(c.transports || []), body.name || guess);
+  audit(req, { action: 'auth.passkey_added', entityType: 'user', entityId: req.user.id, description: `${req.user.display_name} הוסיף/ה כניסה בטביעת אצבע / זיהוי פנים (${body.name || guess})` });
+  res.status(201).json({ ok: true, message: 'הכניסה בטביעת אצבע / זיהוי פנים הופעלה במכשיר הזה' });
+}));
+
+router.delete('/passkeys/:id', requireAuth, csrf, ah((req, res) => {
+  const id = Number(req.params.id);
+  const r = getDb().prepare('DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?').run(id, req.user.id);
+  if (!r.changes) throw badRequest('המכשיר לא נמצא');
+  audit(req, { action: 'auth.passkey_removed', entityType: 'user', entityId: req.user.id, description: `${req.user.display_name} הסיר/ה מכשיר לכניסה ביומטרית` });
+  res.json({ ok: true, message: 'המכשיר הוסר' });
+}));
+
+router.post('/passkeys/login/options', loginLimiter, ah(async (req, res) => {
+  const { rpID } = relyingParty(req);
+  const options = await generateAuthenticationOptions({ rpID, userVerification: 'required', allowCredentials: [] });
+  res.json({ options, challenge_id: putChallenge({ kind: 'auth', challenge: options.challenge }) });
+}));
+
+router.post('/passkeys/login/verify', loginLimiter, ah(async (req, res) => {
+  const body = validate(z.object({ challenge_id: z.string().max(100), remember: z.boolean().optional().default(true), response: z.any() }), req.body);
+  const ch = getChallenge(body.challenge_id);
+  if (!ch || ch.kind !== 'auth') throw unauthorized('פג הזמן. נסו שוב.');
+  dropChallenge(body.challenge_id);
+  const db = getDb();
+  const cred = db.prepare('SELECT * FROM webauthn_credentials WHERE credential_id = ?').get(String(body.response?.id || ''));
+  if (!cred) throw unauthorized('המכשיר הזה לא רשום. התחברו עם סיסמה והפעילו כניסה ביומטרית בהגדרות.');
+  const { rpID, origin } = relyingParty(req);
+  let v;
+  try {
+    v = await verifyAuthenticationResponse({
+      response: body.response, expectedChallenge: ch.challenge, expectedOrigin: origin, expectedRPID: rpID, requireUserVerification: true,
+      credential: { id: cred.credential_id, publicKey: new Uint8Array(Buffer.from(cred.public_key, 'base64url')), counter: cred.counter, transports: JSON.parse(cred.transports || '[]') },
+    });
+  } catch { throw unauthorized('האימות נכשל'); }
+  if (!v.verified) throw unauthorized('האימות נכשל');
+  const user = db.prepare('SELECT u.*, r.key AS role FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?').get(cred.user_id);
+  if (!user?.is_active) throw unauthorized('החשבון אינו פעיל. פנו למנהל המערכת.');
+  if (user.locked_until && user.locked_until > new Date().toISOString()) throw unauthorized('החשבון ננעל זמנית. נסו שוב בעוד מספר דקות.');
+  db.prepare("UPDATE webauthn_credentials SET counter = ?, last_used_at = datetime('now') WHERE id = ?").run(v.authenticationInfo.newCounter, cred.id);
+  // A passkey with fingerprint / Face ID is already two factors (the device + the biometric).
+  finishLogin(req, res, user, body.remember, `טביעת אצבע / זיהוי פנים · ${cred.name}`);
 }));
 
 // Public: whether to show the demo quick-login buttons (only in demo installs)
@@ -99,8 +285,21 @@ router.post('/logout', (req, res) => {
 });
 
 router.get('/me', requireAuth, (req, res) => {
-  res.json({ user: publicUser(req.user) });
+  const row = getDb().prepare('SELECT dashboard_prefs FROM users WHERE id = ?').get(req.user.id);
+  let prefs = {};
+  try { prefs = JSON.parse(row?.dashboard_prefs || '{}'); } catch { /* ignore */ }
+  res.json({ user: { ...publicUser(req.user), prefs } });
 });
+
+// Personal home screen: which page opens first and which dashboard blocks are hidden.
+router.put('/preferences', requireAuth, csrf, ah((req, res) => {
+  const prefs = validate(z.object({
+    start: z.string().regex(/^\/[a-z-]*$/, 'עמוד לא תקין').max(40).default('/'),
+    hidden: z.array(z.string().regex(/^[a-z_]+$/).max(30)).max(30).default([]),
+  }), req.body);
+  getDb().prepare('UPDATE users SET dashboard_prefs = ? WHERE id = ?').run(JSON.stringify(prefs), req.user.id);
+  res.json({ prefs, message: 'המסך הראשי עודכן' });
+}));
 
 router.post('/forgot', resetLimiter, ah(async (req, res) => {
   const { identifier } = validate(z.object({ identifier: z.string().trim().min(1).max(120) }), req.body);

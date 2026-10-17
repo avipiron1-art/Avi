@@ -303,3 +303,90 @@ CREATE TABLE IF NOT EXISTS user_permissions (
   granted    INTEGER NOT NULL CHECK (granted IN (0,1)),  -- 1 = grant, 0 = revoke
   PRIMARY KEY (user_id, permission)
 );
+
+-- =====================================================================
+-- v3: push, invites, staffing, swaps, announcements, passkeys
+-- =====================================================================
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  id         INTEGER PRIMARY KEY,
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  endpoint   TEXT NOT NULL UNIQUE,
+  p256dh     TEXT NOT NULL,
+  auth       TEXT NOT NULL,
+  user_agent TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_push_user ON push_subscriptions(user_id);
+
+-- Join links for new employees
+CREATE TABLE IF NOT EXISTS invites (
+  id            INTEGER PRIMARY KEY,
+  token_hash    TEXT NOT NULL UNIQUE,
+  label         TEXT,
+  created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,
+  position_id   INTEGER REFERENCES positions(id) ON DELETE SET NULL,
+  location_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+  max_uses      INTEGER NOT NULL DEFAULT 1,
+  uses          INTEGER NOT NULL DEFAULT 0,
+  expires_at    TEXT NOT NULL,
+  revoked       INTEGER NOT NULL DEFAULT 0,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- Per-day override of how many workers / shift leads a shift needs
+CREATE TABLE IF NOT EXISTS slot_overrides (
+  date             TEXT NOT NULL,
+  shift_type_id    INTEGER NOT NULL REFERENCES shift_types(id) ON DELETE CASCADE,
+  required_workers INTEGER NOT NULL CHECK (required_workers >= 0),
+  required_leads   INTEGER NOT NULL CHECK (required_leads >= 0),
+  PRIMARY KEY (date, shift_type_id)
+);
+
+-- Shift swap board
+CREATE TABLE IF NOT EXISTS shift_swaps (
+  id          INTEGER PRIMARY KEY,
+  shift_id    INTEGER NOT NULL REFERENCES shifts(id) ON DELETE CASCADE,
+  offered_by  INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  taken_by    INTEGER REFERENCES employees(id) ON DELETE SET NULL,
+  note        TEXT,
+  status      TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','taken','approved','rejected','cancelled')),
+  decided_by  INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  decided_at  TEXT,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_swaps_status ON shift_swaps(status);
+
+-- Announcements board
+CREATE TABLE IF NOT EXISTS announcements (
+  id            INTEGER PRIMARY KEY,
+  title         TEXT NOT NULL CHECK (length(title) BETWEEN 1 AND 120),
+  body          TEXT,
+  urgency       TEXT NOT NULL DEFAULT 'normal' CHECK (urgency IN ('low','normal','high','critical')),
+  requires_ack  INTEGER NOT NULL DEFAULT 0 CHECK (requires_ack IN (0,1)),   -- pops up until acknowledged
+  location_id   INTEGER REFERENCES locations(id) ON DELETE SET NULL,      -- NULL = all branches
+  department_id INTEGER REFERENCES departments(id) ON DELETE SET NULL,    -- NULL = all departments
+  expires_at    TEXT,
+  created_by    INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS announcement_reads (
+  announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  read_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  acked_at        TEXT,
+  PRIMARY KEY (announcement_id, user_id)
+);
+
+-- Fingerprint / Face ID login (WebAuthn passkeys)
+CREATE TABLE IF NOT EXISTS webauthn_credentials (
+  id            INTEGER PRIMARY KEY,
+  user_id       INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  credential_id TEXT NOT NULL UNIQUE,      -- base64url
+  public_key    TEXT NOT NULL,             -- base64url
+  counter       INTEGER NOT NULL DEFAULT 0,
+  transports    TEXT,
+  name          TEXT,
+  last_used_at  TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);

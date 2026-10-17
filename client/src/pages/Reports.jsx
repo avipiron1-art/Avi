@@ -1,5 +1,6 @@
 import { useState } from 'react';
-import { FileSpreadsheet, FileText, Printer, Clock, Timer, AlertTriangle, UserX, CalendarDays, Wallet, BarChart3, Users } from 'lucide-react';
+import { Link } from 'react-router';
+import { FileSpreadsheet, FileText, Printer, Receipt, Clock, Timer, AlertTriangle, UserX, CalendarDays, Wallet, BarChart3, Users } from 'lucide-react';
 import { useApi } from '../lib/hooks.js';
 import { download } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -16,6 +17,28 @@ const PRESETS = {
   week: () => { const s = startOfWeek(localToday()); return { from: s, to: addDays(s, 6) }; },
   quarter: () => ({ from: addMonths(localToday(), -2).slice(0, 8) + '01', to: endOfMonth(localToday()) }),
 };
+
+/** One-click monthly file for the accountant: summary per employee + day-by-day sheet. */
+function PayrollExport() {
+  const toast = useToast();
+  const [month, setMonth] = useState(addMonths(localToday(), localToday().slice(8, 10) < '15' ? -1 : 0).slice(0, 7));
+  const [busy, setBusy] = useState(null);
+  const get = async (format) => {
+    setBusy(format);
+    try { await download('/reports/payroll', { month, format }, `payroll_${month}.${format}`); toast.success('הקובץ הורד – אפשר לשלוח אותו לרואה החשבון'); } catch (e) { toast.error(e); } finally { setBusy(null); }
+  };
+  return (
+    <Card title="דוח חודשי לרואה חשבון" icon={Receipt} className="mb no-print">
+      <div className="payroll-export">
+        <Field label="חודש"><Input type="month" value={month} max={localToday().slice(0, 7)} onChange={(e) => setMonth(e.target.value)} /></Field>
+        <Button variant="primary" icon={FileSpreadsheet} loading={busy === 'xlsx'} onClick={() => get('xlsx')} disabled={!month}>הורדת Excel</Button>
+        <Button icon={FileText} loading={busy === 'csv'} onClick={() => get('csv')} disabled={!month}>CSV</Button>
+        <Link to="/my-hours" className="btn btn-ghost">תלוש שעות לעובד</Link>
+      </div>
+      <p className="subtle" style={{ margin: '10px 0 0' }}>כולל לכל עובד: ת.ז., ימי עבודה, שעות רגילות, נוספות 125%/150%, שעות במנוחה ובחגים, היעדרויות – ודף פירוט יומי.</p>
+    </Card>
+  );
+}
 
 export default function Reports() {
   const { meta, can } = useAuth();
@@ -61,6 +84,8 @@ export default function Reports() {
         <p>תקופה: {fullDate(range.from)} – {fullDate(range.to)}</p>
       </div>
 
+      <PayrollExport />
+
       <div className="card card-pad mb no-print">
         <div className="flex flex-wrap" style={{ alignItems: 'flex-end', gap: 12 }}>
           <Field label="תקופה">
@@ -82,7 +107,7 @@ export default function Reports() {
             <KpiCard label="איחורים" value={t.late_count} icon={AlertTriangle} tone="warning" />
             <KpiCard label="היעדרויות" value={t.absences} icon={UserX} tone="danger" />
             <KpiCard label="כמות משמרות" value={t.shifts} icon={CalendarDays} tone="neutral" hint={`${t.employees} עובדים`} />
-            {showCost && <KpiCard label="עלות שכר משוערת" value={money(t.estimated_cost, cur)} icon={Wallet} tone="success" hint="כולל 125% על שעות נוספות" />}
+            {showCost && <KpiCard label="עלות שכר משוערת" value={money(t.estimated_cost, cur)} icon={Wallet} tone="success" hint="לפי כללי השעות הנוספות שבהגדרות" />}
           </div>
           <div className="grid grid-2 mb">
             <Card title="שעות לפי יום" icon={BarChart3}><HoursBar data={data.daily} xKey="date" tickFormatter={shortDate} labelFormatter={(d) => `${dayName(d)} ${shortDate(d)}`} /></Card>

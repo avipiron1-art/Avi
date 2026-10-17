@@ -1,13 +1,15 @@
 import { getDb } from '../db/index.js';
 import { permissionsForUser } from './permissions.js';
+import { pushToUser } from './push.js';
 
 const ins = () =>
   getDb().prepare('INSERT INTO notifications (user_id, type, title, body, link) VALUES (?, ?, ?, ?, ?)');
 
 /** Notify a single user. */
-export function notifyUser(userId, { type, title, body = null, link = null }) {
+export function notifyUser(userId, { type, title, body = null, link = null, urgent = false }) {
   if (!userId) return;
   ins().run(userId, type, title, body, link);
+  pushToUser(userId, { title, body, link, tag: type, urgent });
 }
 
 /** Notify the user account linked to an employee (if any). */
@@ -25,5 +27,6 @@ export function notifyPermission(permission, payload, { exceptUserId = null } = 
   for (const u of users) {
     if (u.id === exceptUserId || !permissionsForUser(u.id, u.role).has(permission)) continue;
     stmt.run(u.id, payload.type, payload.title, payload.body ?? null, payload.link ?? null);
+    pushToUser(u.id, { title: payload.title, body: payload.body, link: payload.link, tag: payload.type, urgent: payload.urgent });
   }
 }

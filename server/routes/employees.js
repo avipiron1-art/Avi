@@ -32,6 +32,8 @@ const employeeSchema = z.object({
   status: z.enum(['active', 'inactive', 'vacation']).default('active'),
   hourly_wage: z.union([z.coerce.number().min(0).max(10000), z.null(), z.literal('')]).optional()
     .transform((v) => (v === '' || v == null ? null : v)),
+  can_lead: z.boolean().optional().default(false).transform((b) => (b ? 1 : 0)),
+  national_id: z.union([z.string().trim().regex(/^\d{5,9}$/, 'מספר זהות לא תקין'), z.literal(''), z.null()]).optional().transform((v) => v || null),
 });
 
 /** Can the current user view this employee's profile? */
@@ -65,6 +67,7 @@ router.get('/', requirePerm('employees.view'), (req, res) => {
   if (department_id) { where.push('e.department_id = @department_id'); params.department_id = Number(department_id); }
   if (position_id) { where.push('e.position_id = @position_id'); params.position_id = Number(position_id); }
   if (status && STATUS_LABEL[status]) { where.push('e.status = @status'); params.status = status; }
+  if (req.user.location_id) { where.push('e.location_id = @scope_loc'); params.scope_loc = req.user.location_id; } // branch manager
   let orderCol = SORTABLE[sort] || SORTABLE.name;
   if (sort === 'wage' && !req.can('employees.wage')) orderCol = SORTABLE.name;
   const orderDir = dir === 'desc' ? 'DESC' : 'ASC';
@@ -142,8 +145,8 @@ router.post('/', requirePerm('employees.manage'), ah((req, res) => {
   if (!req.can('employees.wage')) data.hourly_wage = null;
   uniqueCheck(data);
   const info = getDb().prepare(
-    `INSERT INTO employees (employee_code, first_name, last_name, phone, email, avatar, position_id, department_id, location_id, start_date, status, hourly_wage)
-     VALUES (@employee_code, @first_name, @last_name, @phone, @email, @avatar, @position_id, @department_id, @location_id, @start_date, @status, @hourly_wage)`,
+    `INSERT INTO employees (employee_code, first_name, last_name, phone, email, avatar, position_id, department_id, location_id, start_date, status, hourly_wage, can_lead, national_id)
+     VALUES (@employee_code, @first_name, @last_name, @phone, @email, @avatar, @position_id, @department_id, @location_id, @start_date, @status, @hourly_wage, @can_lead, @national_id)`,
   ).run({ avatar: null, ...data });
   const emp = getEmployee(info.lastInsertRowid);
   const { avatar, ...logged } = data;
@@ -163,10 +166,10 @@ router.put('/:id', requirePerm('employees.manage'), ah((req, res) => {
   getDb().prepare(
     `UPDATE employees SET employee_code=@employee_code, first_name=@first_name, last_name=@last_name, phone=@phone, email=@email,
      avatar=@avatar, position_id=@position_id, department_id=@department_id, location_id=@location_id, start_date=@start_date,
-     status=@status, hourly_wage=@hourly_wage, updated_at=datetime('now') WHERE id=@id`,
+     status=@status, hourly_wage=@hourly_wage, can_lead=@can_lead, national_id=@national_id, updated_at=datetime('now') WHERE id=@id`,
   ).run({ ...data, id });
   const after = getEmployee(id);
-  const d = diff(before, data, ['employee_code', 'first_name', 'last_name', 'phone', 'email', 'position_id', 'department_id', 'location_id', 'start_date', 'status', 'hourly_wage']);
+  const d = diff(before, data, ['employee_code', 'first_name', 'last_name', 'phone', 'email', 'position_id', 'department_id', 'location_id', 'start_date', 'status', 'hourly_wage', 'can_lead', 'national_id']);
   if (d || before.avatar !== data.avatar) {
     audit(req, { action: 'employee.update', entityType: 'employee', entityId: id, description: `${req.user.display_name} עדכן/ה את פרטי העובד ${after.full_name}`, ...(d || {}) });
   }

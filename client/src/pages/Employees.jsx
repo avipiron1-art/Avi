@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { Plus, Search, Pencil, Trash2, UserX, UserCheck, Users, Download, MoreVertical } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, UserX, UserCheck, Users, Download, MoreVertical, Link2 } from 'lucide-react';
 import { useApi, useDebounced } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -9,6 +9,7 @@ import {
   Button, Card, EmptyState, ErrorState, IconButton, Input, PageHeader, Person, Select, SkeletonRows, SortHeader, StatusBadge, useConfirm,
 } from '../components/ui.jsx';
 import EmployeeForm from '../components/EmployeeForm.jsx';
+import InviteModal from '../components/InviteModal.jsx';
 import { EMPLOYEE_STATUS, fullDate, money } from '../lib/format.js';
 
 export default function Employees() {
@@ -19,6 +20,7 @@ export default function Employees() {
   const [filters, setFilters] = useState({ department_id: '', position_id: '', status: '' });
   const [sort, setSort] = useState({ field: 'name', dir: 'asc' });
   const [form, setForm] = useState(null); // null | {} (new) | employee
+  const [inviting, setInviting] = useState(false);
   const [confirm, confirmDialog] = useConfirm();
   const q = useDebounced(search);
   const { data, loading, error, reload } = useApi('/employees', { search: q, ...filters, sort: sort.field, dir: sort.dir });
@@ -76,6 +78,7 @@ export default function Employees() {
         actions={(
           <>
             <Button icon={Download} onClick={exportCsv} disabled={!employees.length}><span className="btn-label">ייצוא</span></Button>
+            {canManage && <Button icon={Link2} onClick={() => setInviting(true)}><span className="btn-label">הזמנה בקישור</span></Button>}
             {canManage && <Button variant="primary" icon={Plus} onClick={() => setForm({})}>הוספת עובד</Button>}
           </>
         )} />
@@ -141,6 +144,7 @@ export default function Employees() {
       </Card>
       {canManage && <button type="button" className="fab" aria-label="הוספת עובד" onClick={() => setForm({})}><Plus size={24} /></button>}
       {form && <EmployeeForm open onClose={() => setForm(null)} employee={form.id ? form : null} onSaved={() => reload({ silent: true })} onDeleted={() => reload({ silent: true })} />}
+      {inviting && <InviteModal onClose={() => { setInviting(false); reload({ silent: true }); }} />}
       {confirmDialog}
     </>
   );

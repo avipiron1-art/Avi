@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import ExcelJS from 'exceljs';
 import { ah, badRequest } from '../lib/errors.js';
-import { validate, z, zDate, zOptId } from '../lib/validate.js';
+import { validate, z, zDate, zMonth, zOptId } from '../lib/validate.js';
 import { buildReport } from '../services/reports.js';
 import { audit } from '../services/audit.js';
 import { getSetting } from '../services/settings.js';
-import { addDays } from '../lib/time.js';
+import { addDays, monthRange, todayLocal } from '../lib/time.js';
+import { buildPayroll } from '../services/payroll.js';
+import { payrollCsv, payrollWorkbook, sendWorkbook, slipJson } from '../services/payrollExport.js';
 
 const router = Router();
 
@@ -23,7 +25,7 @@ function parseFilters(query) {
 
 router.get('/', ah((req, res) => {
   const f = parseFilters(req.query);
-  res.json(buildReport(f, { includeCost: req.can('employees.wage') }));
+  res.json(buildReport({ ...f, location_id: req.user.location_id || null }, { includeCost: req.can('employees.wage') }));
 }));
 
 function columns(includeCost) {
@@ -50,7 +52,7 @@ const safeCell = (v) => (typeof v === 'string' && /^[=+\-@\t\r]/.test(v) ? `'${v
 router.get('/export', ah(async (req, res) => {
   const f = parseFilters(req.query);
   const includeCost = req.can('employees.wage');
-  const report = buildReport(f, { includeCost });
+  const report = buildReport({ ...f, location_id: req.user.location_id || null }, { includeCost });
   const cols = columns(includeCost);
   const filename = `report_${f.from}_${f.to}`;
   audit(req, { action: 'report.export', entityType: 'report', description: `${req.user.display_name} ייצא/ה דוח ${f.format === 'csv' ? 'CSV' : 'Excel'} לתקופה ${f.from} – ${f.to}`, newValue: f });
@@ -86,6 +88,40 @@ router.get('/export', ah(async (req, res) => {
   res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
   await wb.xlsx.write(res);
   res.end();
+}));
+
+// ---------- monthly payroll hours (for the accountant) ----------
+
+function payrollFor(req, extra = {}) {
+  const q = validate(z.object({ month: zMonth, department_id: zOptId, employee_id: zOptId, format: z.enum(['xlsx', 'csv', 'json']).default('json') }), req.query);
+  if (!q.month) q.month = todayLocal().slice(0, 7);
+  const { from, to } = monthRange(`${q.month}-01`);
+  const data = buildPayroll({ from, to, department_id: q.department_id, employee_id: q.employee_id, location_id: req.user.location_id || null, ...extra }, { includeWage: req.can('employees.wage') });
+  if (!req.can('employees.manage')) for (const e of data.employees) e.national_id = '';
+  return { q, data };
+}
+
+router.get('/payroll', ah(async (req, res) => {
+  const { q, data } = payrollFor(req);
+  if (q.format === 'json') {
+    return res.json({ ...data, employees: data.employees.map(({ days, ...e }) => e) });
+  }
+  audit(req, { action: 'report.payroll_export', entityType: 'report', description: `${req.user.display_name} הוריד/ה דוח שעות חודשי ${q.month} לרואה חשבון` });
+  const includeWage = req.can('employees.wage');
+  if (q.format === 'csv') {
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="payroll_${q.month}.csv"`);
+    return res.send(payrollCsv(data, { includeWage }));
+  }
+  return sendWorkbook(res, await payrollWorkbook(data, { includeWage, period: q.month }), `payroll_${q.month}`);
+}));
+
+// personal slip of one employee (managers)
+router.get('/slip', ah(async (req, res) => {
+  if (!req.query.employee_id) throw badRequest('יש לבחור עובד');
+  const { q, data } = payrollFor(req);
+  if (q.format === 'xlsx') return sendWorkbook(res, await payrollWorkbook(data, { single: true, period: q.month }), `hours_${q.month}_${q.employee_id}`);
+  res.json(slipJson(data));
 }));
 
 export default router;

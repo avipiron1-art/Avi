@@ -4,6 +4,7 @@ import { addDays, addMinutes, hhmm, nowLocal, todayLocal } from '../lib/time.js'
 import { getNumberSetting } from './settings.js';
 import { notifyEmployee, notifyPermission } from './notify.js';
 import { audit } from './audit.js';
+import { maybeDailyBackup } from './backup.js';
 
 export function checkLateEmployees() {
   const db = getDb();
@@ -24,6 +25,23 @@ export function checkLateEmployees() {
   return late.length;
 }
 
+/** Remind employees who are still clocked in a few minutes after their shift ended. */
+export function checkShiftEndReminders() {
+  const db = getDb();
+  const now = nowLocal();
+  const after = getNumberSetting('shift_end_reminder_minutes');
+  const rows = db.prepare(
+    `SELECT s.id, s.employee_id, s.end_at FROM shifts s JOIN attendance a ON a.shift_id = s.id
+     WHERE s.status = 'scheduled' AND COALESCE(s.end_reminded, 0) = 0 AND a.clock_in_at IS NOT NULL AND a.clock_out_at IS NULL
+       AND s.end_at <= ? AND s.end_at >= ?`,
+  ).all(addMinutes(now, -after), `${addDays(todayLocal(), -1)}T00:00`);
+  for (const s of rows) {
+    db.prepare('UPDATE shifts SET end_reminded = 1 WHERE id = ?').run(s.id);
+    notifyEmployee(s.employee_id, { type: 'shift_end', title: 'המשמרת הסתיימה – לא לשכוח להחתים יציאה', body: `המשמרת שלך הסתיימה ב-${hhmm(s.end_at)}. אם סיימת, לחצ/י על "סיום משמרת".`, link: '/', urgent: true });
+  }
+  return rows.length;
+}
+
 export function checkTasksDueSoon() {
   const db = getDb();
   const limit = addDays(todayLocal(), getNumberSetting('task_due_soon_days'));
@@ -40,7 +58,7 @@ export function checkTasksDueSoon() {
 
 export function startJobs() {
   const run = () => {
-    try { checkLateEmployees(); checkTasksDueSoon(); } catch (e) { console.error('[jobs]', e); }
+    try { checkLateEmployees(); checkShiftEndReminders(); checkTasksDueSoon(); maybeDailyBackup(); } catch (e) { console.error('[jobs]', e); }
   };
   run();
   return setInterval(run, 60_000);

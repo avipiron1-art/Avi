@@ -72,7 +72,11 @@ router.get('/', ah((req, res) => {
   if (!req.can('shifts.view_all')) {
     if (!req.user.employee_id) return res.json({ shifts: [] });
     where.push('s.employee_id = @own'); params.own = req.user.employee_id;
-  } else if (q.employee_id) { where.push('s.employee_id = @employee_id'); params.employee_id = q.employee_id; }
+  } else {
+    if (q.employee_id) { where.push('s.employee_id = @employee_id'); params.employee_id = q.employee_id; }
+    // branch manager: only their branch (plus their own shifts)
+    if (req.user.location_id) { where.push('(COALESCE(s.location_id, e.location_id) = @scope_loc OR s.employee_id = @self)'); params.scope_loc = req.user.location_id; params.self = req.user.employee_id || -1; }
+  }
   if (q.department_id) { where.push('e.department_id = @department_id'); params.department_id = q.department_id; }
   if (q.location_id) { where.push('s.location_id = @location_id'); params.location_id = q.location_id; }
   if (q.include_cancelled !== '1') where.push("s.status = 'scheduled'");
