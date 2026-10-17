@@ -140,7 +140,7 @@ export default function Employees() {
         )}
       </Card>
       {canManage && <button type="button" className="fab" aria-label="הוספת עובד" onClick={() => setForm({})}><Plus size={24} /></button>}
-      {form && <EmployeeForm open onClose={() => setForm(null)} employee={form.id ? form : null} onSaved={() => reload({ silent: true })} />}
+      {form && <EmployeeForm open onClose={() => setForm(null)} employee={form.id ? form : null} onSaved={() => reload({ silent: true })} onDeleted={() => reload({ silent: true })} />}
       {confirmDialog}
     </>
   );

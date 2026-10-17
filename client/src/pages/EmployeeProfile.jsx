@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useParams } from 'react-router';
+import { Link, useNavigate, useParams } from 'react-router';
 import {
   ArrowRight, Pencil, Phone, Mail, CalendarDays, Clock, AlertTriangle, UserX, TrendingUp, ListTodo, Inbox, StickyNote, History, CalendarClock, Send,
 } from 'lucide-react';
@@ -60,6 +60,7 @@ function Availability({ employeeId }) {
 
 export default function EmployeeProfile() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const { can, meta, user } = useAuth();
   const toast = useToast();
   const [tab, setTab] = useState('upcoming');
@@ -177,7 +178,7 @@ export default function EmployeeProfile() {
           {tab === 'availability' && <Availability employeeId={e.id} />}
         </div>
       </div>
-      {editing && <EmployeeForm open onClose={() => setEditing(false)} employee={e} onSaved={() => reload({ silent: true })} />}
+      {editing && <EmployeeForm open onClose={() => setEditing(false)} employee={e} onSaved={() => reload({ silent: true })} onDeleted={() => navigate('/employees', { replace: true })} />}
     </>
   );
 }
