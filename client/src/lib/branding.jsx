@@ -3,7 +3,9 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { api } from './api.js';
 
-const DEFAULT_COLOR = '#4f46e5';
+const DEFAULT_COLOR = '#0071e3';
+// The color of the old look; businesses that never picked their own color get the new default.
+const OLD_DEFAULT = '#4f46e5';
 const BrandCtx = createContext({ logo: '', business_name: '', brand_color: DEFAULT_COLOR, reload: () => {} });
 
 function readCache() {
@@ -13,13 +15,12 @@ function readCache() {
 /** Override the primary color tokens (light + dark) from one brand color. */
 export function applyBrandColor(color) {
   let el = document.getElementById('brand-vars');
-  if (!color || !/^#[0-9a-f]{6}$/i.test(color) || color.toLowerCase() === DEFAULT_COLOR) { el?.remove(); return; }
+  if (!color || !/^#[0-9a-f]{6}$/i.test(color) || [DEFAULT_COLOR, OLD_DEFAULT].includes(color.toLowerCase())) { el?.remove(); return; }
   if (!el) { el = document.createElement('style'); el.id = 'brand-vars'; document.head.appendChild(el); }
   const c = color;
   el.textContent = `
 :root{--primary:${c};--primary-hover:color-mix(in srgb,${c} 82%,#000);--primary-soft:color-mix(in srgb,${c} 11%,#fff);--primary-text:color-mix(in srgb,${c} 80%,#000);--focus:0 0 0 3px color-mix(in srgb,${c} 28%,transparent);}
-:root[data-theme='dark']{--primary:color-mix(in srgb,${c} 70%,#fff);--primary-hover:color-mix(in srgb,${c} 55%,#fff);--primary-soft:color-mix(in srgb,${c} 22%,#0d1017);--primary-text:color-mix(in srgb,${c} 45%,#fff);}`;
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', c);
+:root[data-theme='dark']{--primary:color-mix(in srgb,${c} 70%,#fff);--primary-hover:color-mix(in srgb,${c} 55%,#fff);--primary-soft:color-mix(in srgb,${c} 24%,#000);--primary-text:color-mix(in srgb,${c} 45%,#fff);}`;
 }
 
 export function BrandingProvider({ children }) {

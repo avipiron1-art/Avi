@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react';
-import { LogIn, LogOut, CalendarClock, MapPin } from 'lucide-react';
+import { LogIn, LogOut, CalendarClock, MapPin, CheckCircle2, Loader2 } from 'lucide-react';
 import { api } from '../lib/api.js';
 import { useToast } from '../lib/toast.jsx';
-import { Button, Card, Skeleton, StatusBadge } from './ui.jsx';
+import { Card, Skeleton, StatusBadge } from './ui.jsx';
 import { ATTENDANCE_STATUS, duration, longDate, shiftRange, time } from '../lib/format.js';
 
 /** Best-effort current position (never rejects; resolves null when unavailable or denied). */
@@ -23,7 +23,11 @@ function useNow() {
   return now;
 }
 
-/** Big clock-in / clock-out card for the logged-in employee. */
+const at = (s) => new Date(`${s}:00`);
+const pad = (n) => String(n).padStart(2, '0');
+const stopwatch = (sec) => `${pad(Math.floor(sec / 3600))}:${pad(Math.floor((sec % 3600) / 60))}:${pad(sec % 60)}`;
+
+/** "My shift" card: shift hours, and a big round clock-in / clock-out button. */
 export default function ClockWidget({ data, onChange }) {
   const toast = useToast();
   const now = useNow();
@@ -31,6 +35,7 @@ export default function ClockWidget({ data, onChange }) {
   if (!data) return <Card><Skeleton h={220} /></Card>;
   const { active, next } = data;
   const onShift = active?.clock_in_at && !active?.clock_out_at;
+  const done = active?.clock_out_at;
 
   const act = async (kind) => {
     setBusy(true);
@@ -42,40 +47,63 @@ export default function ClockWidget({ data, onChange }) {
     } catch (e) { toast.error(e); } finally { setBusy(false); }
   };
 
-  const elapsed = onShift ? Math.max(0, Math.round((now - new Date(`${active.clock_in_at}:00`)) / 60000)) : 0;
+  const where = active && [active.position_name, active.location_name].filter(Boolean).join(' · ');
+  let big; let sub; let progress = null; let title; let text;
+  if (onShift) {
+    const startMs = at(active.clock_in_at).getTime();
+    const endMs = at(active.end_at).getTime();
+    const plannedStart = at(active.start_at).getTime();
+    big = stopwatch(Math.max(0, Math.floor((now - startMs) / 1000)));
+    sub = <>נכנסת ב־<span className="ltr">{time(active.clock_in_at)}</span> · משמרת <span className="ltr">{shiftRange(active)}</span></>;
+    progress = Math.min(100, Math.max(0, ((now - plannedStart) / (endMs - plannedStart)) * 100));
+    const left = Math.round((endMs - now) / 60000);
+    title = left > 0 ? `נשארו ${duration(left)}` : 'המשמרת הסתיימה – אל תשכח/י לצאת';
+    text = 'בסיום לוחצים על "יציאה" כדי לרשום את שעת הסיום.';
+  } else if (active) {
+    big = shiftRange(active);
+    sub = where || 'המשמרת שלך היום';
+    title = done ? `המשמרת הסתיימה ב־${time(active.clock_out_at)}` : 'עוד לא נכנסת למשמרת';
+    text = done ? 'תודה! השעות נרשמו.' : 'לוחצים על "כניסה" כשמגיעים לעבודה.';
+  } else {
+    big = now.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
+    sub = now.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long' });
+  }
 
   return (
-    <div className="card clock-card">
-      <div className="subtle">{now.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long' })}</div>
-      <div className="clock-time">{now.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}</div>
+    <div className="card my-shift">
+      <div className="my-shift-head">
+        <span className="my-shift-label">המשמרת שלי</span>
+        {active && <StatusBadge map={ATTENDANCE_STATUS} value={active.attendance_status} />}
+      </div>
+      <div>
+        <div className="my-shift-big">{big}</div>
+        <div className="my-shift-sub">{sub}</div>
+      </div>
+      {progress !== null && <div className="my-shift-progress" role="progressbar" aria-label="התקדמות המשמרת" aria-valuenow={Math.round(progress)} aria-valuemin={0} aria-valuemax={100}><span style={{ width: `${progress}%` }} /></div>}
+      <div className="my-shift-divider" />
       {active ? (
-        <>
-          <div className="flex flex-wrap" style={{ justifyContent: 'center' }}>
-            <StatusBadge map={ATTENDANCE_STATUS} value={active.attendance_status} />
-            <span className="muted">משמרת <span className="ltr">{shiftRange(active)}</span></span>
-            {active.location_name && <span className="muted flex" style={{ gap: 4 }}><MapPin size={14} />{active.location_name}</span>}
-          </div>
-          {onShift ? (
-            <>
-              <div className="flex" style={{ justifyContent: 'center' }}><span className="pulse" /> במשמרת מאז <strong className="ltr">{time(active.clock_in_at)}</strong> · {duration(elapsed)}</div>
-              <Button variant="danger" className="clock-btn" icon={LogOut} loading={busy} onClick={() => act('clock-out')}>סיום משמרת</Button>
-            </>
-          ) : active.clock_out_at ? (
-            <p className="muted">המשמרת הסתיימה ב-{time(active.clock_out_at)}. תודה!</p>
+        <div className="my-shift-row">
+          {done ? (
+            <span className="clock-round done" aria-hidden="true"><CheckCircle2 size={34} /></span>
           ) : (
-            <Button variant="success" className="clock-btn" icon={LogIn} loading={busy} onClick={() => act('clock-in')}>התחלת משמרת</Button>
+            <button type="button" className={`clock-round ${onShift ? 'out' : 'in'}`} disabled={busy} onClick={() => act(onShift ? 'clock-out' : 'clock-in')}>
+              {busy ? <Loader2 size={28} className="spin" /> : onShift ? <LogOut size={28} /> : <LogIn size={28} />}
+              <span>{onShift ? 'יציאה' : 'כניסה'}</span>
+            </button>
           )}
-        </>
+          <div className="my-shift-text">
+            <strong>{title}</strong>
+            <span className="muted">{text}</span>
+            {!onShift && !done && active.location_name && <span className="my-shift-ok"><MapPin size={15} />{active.location_name}</span>}
+          </div>
+        </div>
       ) : (
-        <>
-          <p className="muted">אין משמרת פעילה כרגע</p>
-          {next && (
-            <div className="flex" style={{ justifyContent: 'center' }}>
-              <CalendarClock size={16} className="muted" />
-              <span>המשמרת הבאה: {longDate(next.start_at)} · <span className="ltr">{shiftRange(next)}</span></span>
-            </div>
-          )}
-        </>
+        <div className="my-shift-text">
+          <strong>אין משמרת פעילה כרגע</strong>
+          {next ? (
+            <span className="muted flex" style={{ gap: 6 }}><CalendarClock size={15} />המשמרת הבאה: {longDate(next.start_at)} · <span className="ltr">{shiftRange(next)}</span></span>
+          ) : <span className="muted">כשתשובץ/י למשמרת היא תופיע כאן.</span>}
+        </div>
       )}
     </div>
   );

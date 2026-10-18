@@ -3,4 +3,6 @@ try {
   var t = localStorage.getItem('theme');
   if (!t) t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
   document.documentElement.dataset.theme = t;
+  var m = document.querySelector('meta[name="theme-color"]');
+  if (m) m.setAttribute('content', t === 'dark' ? '#000000' : '#f2f2f7');
 } catch (e) { document.documentElement.dataset.theme = 'light'; }

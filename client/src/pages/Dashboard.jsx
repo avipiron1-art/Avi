@@ -103,7 +103,7 @@ function ManagerDashboard({ data }) {
   const { user } = useAuth();
   return (
     <>
-      <PageHeader title={`${greeting()}, ${user.display_name.split(' ')[0]}`} subtitle={`${longDate(data.now)} · הנה מה שקורה היום בעסק`}
+      <PageHeader eyebrow={longDate(data.now)} title={`${greeting()}, ${user.display_name.split(' ')[0]}`} subtitle="הנה מה שקורה היום בעסק"
         actions={<>{c.button}<Link to="/shifts" className="btn btn-primary"><CalendarPlus size={17} /><span className="btn-label">לוח משמרות</span></Link></>} />
       {c.modal}
       <PushToggle compact />
@@ -195,7 +195,7 @@ function EmployeeDashboard({ data, reload }) {
   const { kpis, upcoming, tasks, charts } = data;
   return (
     <>
-      <PageHeader title={`${greeting()}, ${user.display_name.split(' ')[0]}`} subtitle={longDate(data.now)} actions={c.button} />
+      <PageHeader eyebrow={longDate(data.now)} title={`${greeting()}, ${user.display_name.split(' ')[0]}`} actions={c.button} />
       {c.modal}
       <PushToggle compact />
       {(c.show('clock') || c.show('kpis')) && <div className={`grid ${c.show('clock') && c.show('kpis') ? 'grid-2' : ''}`} style={{ marginBottom: 16 }}>

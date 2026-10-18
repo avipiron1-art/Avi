@@ -16,7 +16,7 @@ import AckGate from './AckGate.jsx';
 
 /** Navigation items; `perm` = any of these permissions, `employee` = needs an employee card. */
 export const NAV = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true, mobile: true },
+  { to: '/', label: 'דף הבית', icon: LayoutDashboard, end: true, mobile: true, short: 'ראשי' },
   { to: '/employees', label: 'עובדים', icon: Users, perm: ['employees.view'] },
   { to: '/schedule', label: 'סידור עבודה', icon: CalendarCheck, mobile: true, short: 'סידור' },
   { to: '/shifts', label: 'משמרות', icon: CalendarDays, mobile: true },
@@ -161,7 +161,7 @@ export default function Layout() {
         {items.filter((n) => n.mobile).map((n) => (
           <NavLink key={n.to} to={n.to} end={n.end}>
             <n.icon size={21} />
-            <span>{n.label === 'Dashboard' ? 'ראשי' : n.short || n.label}</span>
+            <span>{n.short || n.label}</span>
           </NavLink>
         ))}
         <a href="#menu" onClick={(e) => { e.preventDefault(); setMenuOpen(true); }}>

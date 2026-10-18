@@ -46,7 +46,7 @@ export const clearMailConfig = () => updateSettings({ smtp_host: '', smtp_user: 
 
 /** A simple RTL email with the business name and color. `lines` are paragraphs; `button` = { label, url }. */
 export function renderEmail({ title, lines = [], button = null, footer = '' }) {
-  const color = getSetting('brand_color') || '#4f46e5';
+  const color = getSetting('brand_color') || '#0071e3';
   const biz = esc(getSetting('business_name') || 'Shiftly');
   const paras = lines.map((l) => `<p style="margin:0 0 12px;line-height:1.6">${esc(l).replace(/\n/g, '<br>')}</p>`).join('');
   const btn = button ? `<p style="margin:20px 0"><a href="${esc(button.url)}" style="background:${color};color:#fff;text-decoration:none;padding:12px 22px;border-radius:10px;font-weight:bold;display:inline-block">${esc(button.label)}</a></p>` : '';

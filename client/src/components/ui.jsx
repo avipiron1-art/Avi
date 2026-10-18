@@ -74,11 +74,9 @@ export function Card({ title, icon: Icon, actions, children, pad, className = ''
 export function KpiCard({ label, value, icon: Icon, tone = 'primary', hint, to, onClick }) {
   const inner = (
     <>
-      <div className="kpi-top">
-        <span className="kpi-label">{label}</span>
-        {Icon && <span className={`kpi-icon tone-${tone}`}><Icon size={19} /></span>}
-      </div>
+      {Icon && <span className={`kpi-icon tone-${tone}`}><Icon size={19} /></span>}
       <div className="kpi-value">{value ?? '—'}</div>
+      <span className="kpi-label">{label}</span>
       {hint && <div className="subtle">{hint}</div>}
     </>
   );
@@ -86,10 +84,11 @@ export function KpiCard({ label, value, icon: Icon, tone = 'primary', hint, to, 
   return <div className="card kpi">{inner}</div>;
 }
 
-export function PageHeader({ title, subtitle, actions }) {
+export function PageHeader({ title, subtitle, actions, eyebrow }) {
   return (
     <div className="page-header">
       <div>
+        {eyebrow && <div className="page-eyebrow">{eyebrow}</div>}
         <h1>{title}</h1>
         {subtitle && <p className="muted" style={{ marginTop: 4 }}>{subtitle}</p>}
       </div>
