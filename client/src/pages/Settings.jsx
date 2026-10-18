@@ -603,7 +603,7 @@ function Permissions() {
               <div className="subtle">{r.locked ? 'כל ההרשאות' : `${r.permissions.length} הרשאות`} · {scopeLabel(r.scope)} · {r.users} משתמשים</div>
             </div>
             {canEdit && <IconButton icon={Pencil} label={`עריכת ${r.name}`} small onClick={() => setEdit(r)} />}
-            {canEdit && r.custom && <IconButton icon={Trash2} label={`מחיקת ${r.name}`} small onClick={() => setDel(r)} />}
+            {canEdit && r.deletable && <IconButton icon={Trash2} label={`מחיקת ${r.name}`} small onClick={() => setDel(r)} />}
           </div>
         ))}
       </div>

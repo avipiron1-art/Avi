@@ -137,6 +137,8 @@ router.put('/settings', requirePerm('settings.manage'), ah((req, res) => {
 
 // =========================== roles & permissions ===========================
 const BUILT_IN_ROLES = ['admin', 'shift_manager', 'employee'];
+// The main admin and the basic employee role always exist; every other role can be edited and deleted.
+const PROTECTED_ROLES = ['admin', 'employee'];
 const onlyMainAdmin = (req) => { if (req.user.role !== 'admin') throw forbidden('רק מנהל ראשי יכול לנהל תפקידים והרשאות'); };
 const roleRow = (key) => getDb().prepare('SELECT * FROM roles WHERE key = ?').get(key);
 
@@ -146,7 +148,7 @@ router.get('/permissions', requirePerm('users.manage'), (req, res) => {
     catalog: Object.entries(PERMISSIONS).map(([key, label]) => ({ key, label })),
     scopes: SCOPE_KEYS.map((key) => ({ key, label: SCOPES[key] })),
     can_edit: req.user.role === 'admin',
-    roles: roles.map((r) => ({ ...r, scope: r.key === 'admin' ? 'all' : r.scope, locked: r.key === 'admin', custom: !BUILT_IN_ROLES.includes(r.key), permissions: [...permissionsForRole(r.key)] })),
+    roles: roles.map((r) => ({ ...r, scope: r.key === 'admin' ? 'all' : r.scope, locked: r.key === 'admin', custom: !BUILT_IN_ROLES.includes(r.key), deletable: !PROTECTED_ROLES.includes(r.key), permissions: [...permissionsForRole(r.key)] })),
   });
 });
 
@@ -198,7 +200,7 @@ router.delete('/roles/:key', requirePerm('users.manage'), ah((req, res) => {
   onlyMainAdmin(req);
   const role = roleRow(req.params.key);
   if (!role) throw notFound('התפקיד לא נמצא');
-  if (BUILT_IN_ROLES.includes(role.key)) throw forbidden('לא ניתן למחוק תפקיד מובנה');
+  if (PROTECTED_ROLES.includes(role.key)) throw forbidden(role.key === 'admin' ? 'לא ניתן למחוק את תפקיד המנהל הראשי' : 'לא ניתן למחוק את תפקיד העובד הבסיסי');
   const db = getDb();
   const count = db.prepare('SELECT COUNT(*) c FROM users WHERE role_id = ?').get(role.id).c;
   let target = null;

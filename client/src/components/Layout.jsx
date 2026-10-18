@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate, Link } from 'react-router';
 import {
   LayoutDashboard, Users, CalendarDays, Clock, ListTodo, Inbox, BarChart3, Bell, Settings, Menu, Search, Moon, Sun,
-  LogOut, KeyRound, ChevronDown, CalendarCheck, X, Receipt, Megaphone,
+  LogOut, KeyRound, ChevronDown, CalendarCheck, X, Receipt, Megaphone, AlertTriangle,
 } from 'lucide-react';
 import { useAuth } from '../lib/auth.jsx';
 import { useTheme } from '../lib/theme.js';
@@ -146,6 +146,12 @@ export default function Layout() {
         </header>
         <main className="content">
           <InstallBanner />
+          {user.scope?.missing && (
+            <div className="alert tone-warning mb" role="alert">
+              <AlertTriangle size={18} />
+              <span>{user.scope.missing === 'department' ? 'לא הוגדרה לך מחלקה' : 'לא הוגדר לך סניף'}, ולכן אינך רואה עובדים ולא יכול/ה לבנות סידור. פנו למנהל הראשי כדי שיגדיר את זה בהגדרות ← משתמשים.</span>
+            </div>
+          )}
           <Outlet />
           <AckGate />
         </main>
