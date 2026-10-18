@@ -8,7 +8,7 @@ import { useApi } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
-  Button, Card, KpiCard, Modal, PageHeader, Person, Select, StatusBadge, EmptyState, ErrorState, SkeletonPage, Badge, Field,
+  Button, Card, KpiCard, Modal, PageHeader, Person, Select, StatusBadge, EmptyState, ErrorState, SkeletonPage, Badge, Field, Ring,
 } from '../components/ui.jsx';
 import { NAV } from '../components/Layout.jsx';
 import { useToast } from '../lib/toast.jsx';
@@ -97,6 +97,52 @@ function useCustomize(kind) {
   };
 }
 
+/** Manager home: a ring showing how many of the people scheduled right now have clocked in. */
+function NowRing({ kpis }) {
+  const scheduled = kpis.scheduled_now || 0;
+  const missing = Math.max(0, scheduled - kpis.on_shift_now);
+  return (
+    <section className="card ring-card ring-card-wide" aria-label="עכשיו בעסק">
+      <Ring value={scheduled ? kpis.on_shift_now / scheduled : 0} tone={missing ? 'primary' : 'success'} size={180} stroke={14} label={`${kpis.on_shift_now} מתוך ${scheduled} נכנסו`}>
+        <span className="ring-top">נכנסו למשמרת</span>
+        <span className="ring-big">{kpis.on_shift_now}<small>/{scheduled}</small></span>
+        <span className="ring-bottom">{scheduled ? (missing ? `${missing} עוד לא נכנסו` : 'כולם כאן') : 'אין משמרת עכשיו'}</span>
+      </Ring>
+      <div className="ring-side">
+        <div className="ring-card-label">עכשיו בעסק</div>
+        <h2 className="ring-card-title">{scheduled ? `${kpis.on_shift_now} מתוך ${scheduled} במשמרת` : 'אין משמרת פעילה כרגע'}</h2>
+        <div className="ring-stats">
+          <div><span>היום</span><strong>{kpis.today_employees}</strong></div>
+          <div><span>בקשות</span><strong>{kpis.pending_requests ?? '—'}</strong></div>
+          <div><span>משימות</span><strong>{kpis.open_tasks}</strong></div>
+        </div>
+        <div className="ring-buttons">
+          <Link to="/attendance" className="ring-action in">לנוכחות</Link>
+          <Link to="/schedule" className="ring-action soft">לסידור</Link>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/** Upcoming shifts as small side-by-side cards. */
+function NextUp({ shifts }) {
+  return (
+    <section className="next-up" aria-label="הבאות בתור">
+      <div className="next-up-head"><h2>הבאות בתור</h2><Link to="/schedule">לכל הסידור</Link></div>
+      <div className="next-up-row">
+        {shifts.map((s) => (
+          <div key={s.id} className="next-up-card">
+            <span className="next-up-day">{dayName(s.start_at)} {shortDate(s.start_at)}</span>
+            <strong className="ltr">{shiftRange(s)}</strong>
+            <span className="subtle">{s.location_name || s.position_name || ''}</span>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function ManagerDashboard({ data }) {
   const c = useCustomize('manager');
   const { kpis, current, upcoming, activity, charts } = data;
@@ -104,12 +150,12 @@ function ManagerDashboard({ data }) {
   return (
     <>
       <PageHeader eyebrow={longDate(data.now)} title={`${greeting()}, ${user.display_name.split(' ')[0]}`} subtitle="הנה מה שקורה היום בעסק"
-        actions={<>{c.button}<Link to="/shifts" className="btn btn-primary"><CalendarPlus size={17} /><span className="btn-label">לוח משמרות</span></Link></>} />
+        actions={<>{c.button}<Link to="/shifts" className="btn btn-primary hide-sm"><CalendarPlus size={17} /><span className="btn-label">לוח משמרות</span></Link></>} />
       {c.modal}
       <PushToggle compact />
+      {c.show('kpis') && <NowRing kpis={kpis} />}
       {c.show('kpis') && <div className="kpis">
         <KpiCard label="עובדים פעילים" value={kpis.active_employees} icon={Users} tone="primary" />
-        <KpiCard label="כרגע במשמרת" value={kpis.on_shift_now} icon={UserCheck} tone="success" hint={`מתוך ${kpis.scheduled_now} משובצים כעת`} />
         <KpiCard label="עובדים במשמרת היום" value={kpis.today_employees} icon={CalendarDays} tone="info" />
         <KpiCard label="שעות עבודה החודש" value={kpis.month_hours.toLocaleString('he-IL')} icon={Clock} tone="warning" />
         {kpis.pending_requests !== null && <KpiCard label="בקשות ממתינות" value={kpis.pending_requests} icon={Inbox} tone="danger" to="/requests" />}
@@ -206,9 +252,10 @@ function EmployeeDashboard({ data, reload }) {
           <KpiCard label="בקשות ממתינות" value={kpis.pending_requests} icon={Inbox} tone="info" />
         </div>}
       </div>}
+      {c.show('upcoming') && upcoming.length > 0 && <NextUp shifts={upcoming} />}
       <PushToggle compact />
       <div className="grid grid-2">
-        {c.show('upcoming') && <Card title="המשמרות הקרובות שלי" icon={CalendarClock} pad={false} actions={<Link to="/shifts" className="btn btn-ghost btn-sm">ללוח</Link>}>
+        {c.show('upcoming') && !upcoming.length && <Card title="המשמרות הקרובות שלי" icon={CalendarClock} pad={false} actions={<Link to="/shifts" className="btn btn-ghost btn-sm">ללוח</Link>}>
           {upcoming.length ? (
             <div className="list">
               {upcoming.map((s) => (

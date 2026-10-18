@@ -161,7 +161,7 @@ function Business() {
         </Field>
         <Field label="צבע ראשי" hint="הכפתורים, הקישורים והתפריט ייצבעו בצבע הזה" error={errors.brand_color}>
           <div className="flex flex-wrap">
-            <Input type="color" value={v.brand_color || '#0071e3'} onChange={(e) => { set('brand_color')(e); applyBrandColor(e.target.value); }} style={{ width: 64, padding: 4 }} />
+            <Input type="color" value={v.brand_color || '#2c2c2e'} onChange={(e) => { set('brand_color')(e); applyBrandColor(e.target.value); }} style={{ width: 64, padding: 4 }} />
             {BRAND_COLORS.map((c) => <button key={c} type="button" className="swatch" style={{ background: c }} aria-label={`צבע ${c}`} onClick={() => { setV((x) => ({ ...x, brand_color: c })); applyBrandColor(c); }} />)}
           </div>
         </Field>
@@ -184,7 +184,7 @@ function Business() {
   );
 }
 
-const BRAND_COLORS = ['#0071e3', '#5e5ce6', '#0ea5e9', '#059669', '#d97706', '#dc2626', '#db2777', '#7c3aed', '#334155'];
+const BRAND_COLORS = ['#2c2c2e', '#007aff', '#5e5ce6', '#0ea5e9', '#059669', '#d97706', '#dc2626', '#db2777', '#7c3aed', '#334155'];
 
 /** Resize an uploaded image to fit `max`×`max` and return a data URL (keeps the upload small). */
 function shrinkImage(file, max) {

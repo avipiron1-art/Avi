@@ -301,3 +301,19 @@ export function HolidayTags({ list, compact }) {
     </span>
   );
 }
+
+// ---------- Progress ring ----------
+/** Round progress ring; `value` 0–1, content in the middle. */
+export function Ring({ value = 0, size = 210, stroke = 16, tone = 'primary', label, children }) {
+  const pct = Math.max(0, Math.min(1, value || 0)) * 100;
+  const r = (size - stroke) / 2;
+  return (
+    <div className={`ring ring-${tone}`} style={{ width: size, height: size }} role="img" aria-label={label}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+        <circle cx={size / 2} cy={size / 2} r={r} className="ring-track" strokeWidth={stroke} fill="none" />
+        {pct > 0 && <circle cx={size / 2} cy={size / 2} r={r} className="ring-bar" strokeWidth={stroke} fill="none" strokeLinecap="round" pathLength="100" strokeDasharray="100" strokeDashoffset={100 - pct} />}
+      </svg>
+      <div className="ring-center">{children}</div>
+    </div>
+  );
+}
