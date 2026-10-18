@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate, Link } from 'react-router';
 import {
-  LayoutDashboard, Users, CalendarDays, Clock, ListTodo, Inbox, BarChart3, Bell, Settings, Menu, Search, Moon, Sun,
-  LogOut, KeyRound, ChevronDown, CalendarCheck, X, Receipt, Megaphone,
+  Users, CalendarDays, Clock, ListTodo, Inbox, BarChart3, Bell, Settings, Menu, Search, Moon, Sun,
+  LogOut, KeyRound, ChevronDown, CalendarCheck, X, Receipt, Megaphone, AlertTriangle, Home, MoreHorizontal,
 } from 'lucide-react';
 import { useAuth } from '../lib/auth.jsx';
 import { useTheme } from '../lib/theme.js';
@@ -13,13 +13,14 @@ import NotificationBell from './NotificationBell.jsx';
 import { InstallBanner, InstallButton } from './InstallApp.jsx';
 import { BrandLogo } from '../lib/branding.jsx';
 import AckGate from './AckGate.jsx';
+import { HeaderSlot } from '../lib/headerSlot.js';
 
 /** Navigation items; `perm` = any of these permissions, `employee` = needs an employee card. */
 export const NAV = [
-  { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true, mobile: true },
-  { to: '/employees', label: 'עובדים', icon: Users, perm: ['employees.view'] },
+  { to: '/', label: 'דף הבית', icon: Home, end: true, mobile: true, short: 'ראשי' },
+  { to: '/employees', label: 'עובדים', icon: Users, perm: ['employees.view'], mobile: true },
   { to: '/schedule', label: 'סידור עבודה', icon: CalendarCheck, mobile: true, short: 'סידור' },
-  { to: '/shifts', label: 'משמרות', icon: CalendarDays, mobile: true },
+  { to: '/shifts', label: 'משמרות', icon: CalendarDays, mobile: (can) => !can('employees.view') },
   { to: '/attendance', label: 'נוכחות', icon: Clock, mobile: true },
   { to: '/tasks', label: 'משימות', icon: ListTodo },
   { to: '/requests', label: 'בקשות', icon: Inbox, badge: 'requests' },
@@ -29,6 +30,9 @@ export const NAV = [
   { to: '/notifications', label: 'התראות', icon: Bell, badge: 'notifications' },
   { to: '/settings', label: 'הגדרות', icon: Settings },
 ];
+
+// Phone bottom bar order: home, schedule, attendance, then employees (managers) or shifts (employees)
+const MOBILE_ORDER = ['/', '/schedule', '/attendance', '/employees', '/shifts'];
 
 export default function Layout() {
   const { user, meta, logout, can } = useAuth();
@@ -99,6 +103,11 @@ export default function Layout() {
           ))}
         </nav>
         <div className="sidebar-footer">
+          <div className="sidebar-quick">
+            <button type="button" className="menu-item" onClick={() => { setMenuOpen(false); setSearchOpen(true); }}><Search size={17} />חיפוש</button>
+            <button type="button" className="menu-item" onClick={toggleTheme}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}{theme === 'dark' ? 'מצב בהיר' : 'מצב כהה'}</button>
+            <Link className="menu-item" to="/settings?tab=profile"><KeyRound size={17} />הפרופיל שלי</Link>
+          </div>
           <div className="sidebar-install"><InstallButton block variant="ghost" /></div>
           <div className="person" style={{ padding: 6 }}>
             <Avatar name={user.display_name} size={34} />
@@ -121,6 +130,7 @@ export default function Layout() {
             <kbd>Ctrl K</kbd>
           </button>
           <div className="topbar-actions">
+            <IconButton icon={Search} label="חיפוש" className="search-icon-btn" onClick={() => setSearchOpen(true)} />
             <IconButton icon={theme === 'dark' ? Sun : Moon} label={theme === 'dark' ? 'מצב בהיר' : 'מצב כהה'} onClick={toggleTheme} />
             <NotificationBell unread={unread} setUnread={setUnread} />
             <div style={{ position: 'relative' }} ref={userMenuRef}>
@@ -146,22 +156,31 @@ export default function Layout() {
         </header>
         <main className="content">
           <InstallBanner />
-          <Outlet />
+          {user.scope?.missing && (
+            <div className="alert tone-warning mb" role="alert">
+              <AlertTriangle size={18} />
+              <span>{user.scope.missing === 'department' ? 'לא הוגדרה לך מחלקה' : 'לא הוגדר לך סניף'}, ולכן אינך רואה עובדים ולא יכול/ה לבנות סידור. פנו למנהל הראשי כדי שיגדיר את זה בהגדרות ← משתמשים.</span>
+            </div>
+          )}
+          <HeaderSlot.Provider value={<NotificationBell unread={unread} setUnread={setUnread} />}>
+            <Outlet />
+          </HeaderSlot.Provider>
           <AckGate />
         </main>
       </div>
 
       <nav className="bottom-nav" aria-label="ניווט מהיר">
-        {items.filter((n) => n.mobile).map((n) => (
+        {items.filter((n) => (typeof n.mobile === 'function' ? n.mobile(can) : n.mobile))
+          .sort((a, b) => MOBILE_ORDER.indexOf(a.to) - MOBILE_ORDER.indexOf(b.to)).slice(0, 4).map((n) => (
           <NavLink key={n.to} to={n.to} end={n.end}>
             <n.icon size={21} />
-            <span>{n.label === 'Dashboard' ? 'ראשי' : n.short || n.label}</span>
+            <span>{n.short || n.label}</span>
           </NavLink>
         ))}
         <a href="#menu" onClick={(e) => { e.preventDefault(); setMenuOpen(true); }}>
-          <Menu size={21} />
+          <MoreHorizontal size={21} />
           <span>עוד</span>
-          {unread > 0 && <span className="dot-badge" style={{ top: 0, insetInlineEnd: 18 }}>{unread}</span>}
+          {unread > 0 && <span className="dot-badge">{unread}</span>}
         </a>
       </nav>
 

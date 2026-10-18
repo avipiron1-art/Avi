@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { X, AlertTriangle, Inbox, Loader2, RefreshCw, ChevronUp, ChevronDown } from 'lucide-react';
+import { HeaderSlot } from '../lib/headerSlot.js';
 
 // ---------- Button ----------
 export function Button({ variant = 'default', size, loading, icon: Icon, children, className = '', block, ...rest }) {
@@ -74,11 +75,9 @@ export function Card({ title, icon: Icon, actions, children, pad, className = ''
 export function KpiCard({ label, value, icon: Icon, tone = 'primary', hint, to, onClick }) {
   const inner = (
     <>
-      <div className="kpi-top">
-        <span className="kpi-label">{label}</span>
-        {Icon && <span className={`kpi-icon tone-${tone}`}><Icon size={19} /></span>}
-      </div>
+      {Icon && <span className={`kpi-icon tone-${tone}`}><Icon size={19} /></span>}
       <div className="kpi-value">{value ?? '—'}</div>
+      <span className="kpi-label">{label}</span>
       {hint && <div className="subtle">{hint}</div>}
     </>
   );
@@ -86,14 +85,16 @@ export function KpiCard({ label, value, icon: Icon, tone = 'primary', hint, to, 
   return <div className="card kpi">{inner}</div>;
 }
 
-export function PageHeader({ title, subtitle, actions }) {
+export function PageHeader({ title, subtitle, actions, eyebrow }) {
+  const bell = useContext(HeaderSlot);
   return (
     <div className="page-header">
       <div>
+        {eyebrow && <div className="page-eyebrow">{eyebrow}</div>}
         <h1>{title}</h1>
         {subtitle && <p className="muted" style={{ marginTop: 4 }}>{subtitle}</p>}
       </div>
-      {actions && <div className="actions">{actions}</div>}
+      {(actions || bell) && <div className="actions">{actions}{bell && <div className="header-bell">{bell}</div>}</div>}
     </div>
   );
 }
@@ -298,5 +299,21 @@ export function HolidayTags({ list, compact }) {
     <span className={`holiday-tags ${compact ? 'compact' : ''}`}>
       {list.map((h) => <span key={h.name} className={`holiday-tag kind-${h.kind}`} title={h.name}>{h.name}</span>)}
     </span>
+  );
+}
+
+// ---------- Progress ring ----------
+/** Round progress ring; `value` 0–1, content in the middle. */
+export function Ring({ value = 0, size = 210, stroke = 16, tone = 'primary', label, children }) {
+  const pct = Math.max(0, Math.min(1, value || 0)) * 100;
+  const r = (size - stroke) / 2;
+  return (
+    <div className={`ring ring-${tone}`} style={{ width: size, height: size }} role="img" aria-label={label}>
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`} aria-hidden="true">
+        <circle cx={size / 2} cy={size / 2} r={r} className="ring-track" strokeWidth={stroke} fill="none" />
+        {pct > 0 && <circle cx={size / 2} cy={size / 2} r={r} className="ring-bar" strokeWidth={stroke} fill="none" strokeLinecap="round" pathLength="100" strokeDasharray="100" strokeDashoffset={100 - pct} />}
+      </svg>
+      <div className="ring-center">{children}</div>
+    </div>
   );
 }

@@ -951,6 +951,8 @@ test('custom roles: main admin creates, edits and deletes a role with its own pe
   assert.equal((await c.get(`/reports?from=2026-01-01&to=2026-01-31`)).status, 403);
   // built-ins can be renamed but not deleted; admin keeps everything
   assert.equal((await admin.del('/roles/employee')).status, 403);
+  assert.equal((await admin.del('/roles/admin')).status, 403);
+  assert.ok((await admin.get('/permissions')).body.roles.find((x) => x.key === 'shift_manager').deletable, 'shift manager can be deleted');
   assert.equal((await admin.put('/roles/admin', { name: 'בעלים', permissions: [] })).status, 200);
   assert.equal((await admin.get('/permissions')).body.roles.find((x) => x.key === 'admin').permissions.length > 10, true);
   await admin.put('/roles/admin', { name: 'מנהל ראשי' });
@@ -997,4 +999,17 @@ test('shift types per branch: a branch manager adds, changes and hides types onl
   assert.ok((await admin.get(`/schedule/board?week=2033-03-06&location_id=${loc1}`)).body.types.some((t) => t.id === shared.id));
   // a chain manager can still change a shared type for everyone
   assert.equal((await admin.put(`/schedule/shift-types/${shared.id}`, { ...shared, name: `${shared.name}`, is_active: true, location_id: 0 })).status, 200);
+});
+
+test('the shift manager role can be deleted (its people move to another role); main admin and employee cannot', async () => {
+  const db = getDb();
+  const admin = await login('admin', 'Admin1234');
+  const smUsers = db.prepare("SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.key = 'shift_manager'").all().map((u) => u.id);
+  assert.ok(smUsers.length > 0);
+  assert.equal((await admin.del('/roles/shift_manager')).status, 409, 'must choose where its people go');
+  assert.equal((await admin.del('/roles/shift_manager?move_to=employee')).status, 200);
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM roles WHERE key = 'shift_manager'").get().c, 0);
+  for (const id of smUsers) assert.equal(db.prepare('SELECT r.key FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?').get(id).key, 'employee');
+  assert.equal((await admin.put('/roles/admin', { name: 'בעל הרשת' })).status, 200, 'main admin can be renamed');
+  assert.equal(db.prepare("SELECT name FROM roles WHERE key = 'admin'").get().name, 'בעל הרשת');
 });

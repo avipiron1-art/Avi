@@ -9,7 +9,7 @@ export const DEFAULT_SETTINGS = {
   currency: '₪',
   task_due_soon_days: '2',
   // branding
-  brand_color: '#4f46e5',
+  brand_color: '#2c2c2e',
   logo: '',
   // overtime (Israeli law defaults – verify with your accountant)
   ot_tier1_hours: '2',        // first overtime hours paid at rate_ot1

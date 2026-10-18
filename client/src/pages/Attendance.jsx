@@ -93,8 +93,9 @@ function Board() {
             ['late', 'איחורים', s.late, Timer, 'warning'], ['absent', 'נעדרים', s.absent, UserX, 'danger'], ['not_started', 'טרם התחילו', s.not_started, Clock, 'neutral'],
           ].map(([key, label, value, Icon, tone]) => (
             <button key={label} type="button" className={`card kpi kpi-link ${statusFilter === key ? 'selected' : ''}`} style={{ textAlign: 'start', cursor: 'pointer', outline: statusFilter === key && key ? '2px solid var(--primary)' : undefined }} onClick={() => setStatusFilter((f) => (f === key ? '' : key))}>
-              <div className="kpi-top"><span className="kpi-label">{label}</span><span className={`kpi-icon tone-${tone}`}><Icon size={18} /></span></div>
+              <span className={`kpi-icon tone-${tone}`}><Icon size={18} /></span>
               <div className="kpi-value">{value}</div>
+              <span className="kpi-label">{label}</span>
             </button>
           ))}
         </div>
