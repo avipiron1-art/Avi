@@ -10,6 +10,7 @@ import { addDays, startOfWeek, todayLocal, weekday, nowLocal } from '../lib/time
 import { audit } from '../services/audit.js';
 import { notifyEmployee, notifyPermission } from '../services/notify.js';
 import { locationInScope, scopeBranches, scopeWhere } from '../services/scope.js';
+import { canTarget, employeeWindow, fmtWhen, isOpen, windowEmployees } from '../services/submission.js';
 
 const router = Router();
 const fmt = (d) => `${d.slice(8, 10)}/${d.slice(5, 7)}`;
@@ -232,9 +233,11 @@ router.get('/my', requireEmployee, (req, res) => {
   ).all(req.user.employee_id, ws, addDays(ws, 6));
   const sub = db.prepare('SELECT note, submitted_at FROM schedule_submissions WHERE employee_id = ? AND week_start = ?').get(req.user.employee_id, ws);
   const state = weekState(ws, employeeBranch(req.user.employee_id).loc);
+  const win = employeeWindow(req.user.employee_id, ws, state.status === 'published' ? state.published_at : null);
+  const past = addDays(ws, 6) < todayLocal();
   res.json({
     week_start: ws, days: weekDays(ws), types: typesForEmployee(req.user.employee_id), prefs, note: sub?.note || '', submitted_at: sub?.submitted_at || null,
-    status: state.status, locked: state.status === 'published' || addDays(ws, 6) < todayLocal(),
+    status: state.status, window: { open: win.open && !past, closes_at: win.closes_at }, locked: !win.open || past,
   });
 });
 
@@ -248,8 +251,10 @@ router.put('/my', requireEmployee, ah((req, res) => {
   }), req.body);
   const ws = startOfWeek(body.week_start);
   const state = weekState(ws, employeeBranch(req.user.employee_id).loc);
-  if (state.status === 'published') throw badRequest('הסידור לשבוע זה כבר פורסם. לשינויים פנו למנהל.');
   if (addDays(ws, 6) < todayLocal()) throw badRequest('לא ניתן להגיש זמינות לשבוע שעבר');
+  if (!employeeWindow(req.user.employee_id, ws, state.status === 'published' ? state.published_at : null).open) {
+    throw badRequest(state.status === 'published' ? 'הסידור לשבוע זה כבר פורסם. לשינויים פנו למנהל.' : 'ההגשה לשבוע זה סגורה כרגע. כשהמנהל יפתח אותה תקבל/י התראה.');
+  }
   const days = new Set(weekDays(ws));
   const typeIds = new Set(typesForEmployee(req.user.employee_id).map((t) => t.id));
   for (const p of body.prefs) {
@@ -270,6 +275,104 @@ router.put('/my', requireEmployee, ah((req, res) => {
   audit(req, { action: 'schedule.submit', entityType: 'employee', entityId: emp, description: `${req.user.display_name} הגיש/ה זמינות לשבוע ${fmt(ws)}`, newValue: { week_start: ws, count: body.prefs.length } });
   if (first) notifyPermission('schedule.manage', { type: 'availability', title: 'הוגשה זמינות לשבוע הבא', body: `${req.user.display_name} · שבוע ${fmt(ws)}`, link: `/schedule?tab=board&week=${ws}` }, { exceptUserId: req.user.id, about: { employeeId: emp } });
   res.json({ message: 'הזמינות נשמרה. תודה!' });
+}));
+
+// ======================= manager: open / close availability submission =======================
+const zWhen = z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, 'מועד לא תקין');
+const windowBody = z.object({
+  closes_at: zWhen.nullable().optional(),
+  reminder_minutes: z.coerce.number().int().min(0).max(7 * 24 * 60).default(180),
+});
+const locName = (loc) => (Number(loc) ? getDb().prepare('SELECT name FROM locations WHERE id = ?').get(loc)?.name || 'סניף' : 'כל הסניפים');
+const depName = (dep) => (Number(dep) ? getDb().prepare('SELECT name FROM departments WHERE id = ?').get(dep)?.name || 'מחלקה' : 'כל המחלקות');
+const targetLabel = (w) => `${locName(w.location_id)} · ${depName(w.department_id)}`;
+
+function checkTarget(req, loc, dep) {
+  if (!hasBranches() && Number(loc)) throw badRequest('אין סניפים במערכת');
+  if (Number(loc) && !getDb().prepare('SELECT 1 FROM locations WHERE id = ?').get(loc)) throw badRequest('סניף לא קיים');
+  if (Number(dep) && !getDb().prepare('SELECT 1 FROM departments WHERE id = ?').get(dep)) throw badRequest('מחלקה לא קיימת');
+  if (!canTarget(req.user.scope, hasBranches() ? loc : 0, dep)) throw forbidden('אפשר לפתוח הגשה רק בסניפים ובמחלקות שבאחריותך');
+}
+
+function windowView(w, req) {
+  const people = windowEmployees(w.location_id, w.department_id);
+  const done = people.length ? getDb().prepare(`SELECT COUNT(*) AS n FROM schedule_submissions WHERE week_start = ? AND employee_id IN (${people.join(',')})`).get(w.week_start).n : 0;
+  return {
+    id: w.id, week_start: w.week_start, location_id: w.location_id, department_id: w.department_id, label: targetLabel(w),
+    closes_at: w.closes_at, reminder_minutes: w.reminder_minutes, reminder_sent: !!w.reminder_sent_at, open: isOpen(w),
+    opened_at: w.opened_at, closed_at: w.closed_at, people: people.length, submitted: done,
+    can_edit: canTarget(req.user.scope, w.location_id, w.department_id),
+  };
+}
+
+router.get('/windows', requirePerm('schedule.manage'), (req, res) => {
+  const ws = parseWeek(req.query.week);
+  const scope = req.user.scope;
+  const db = getDb();
+  // windows that touch the manager's people (their own and wider ones opened above them)
+  const rows = db.prepare('SELECT * FROM schedule_submission_windows WHERE week_start = ? ORDER BY location_id, department_id').all(ws)
+    .filter((w) => scope.all || ((!scope.locs || !w.location_id || scope.locs.includes(w.location_id)) && (!scope.dep || !w.department_id || w.department_id === scope.dep)));
+  const branches = hasBranches() ? scopeBranches(scope) : [];
+  const departments = db.prepare('SELECT id, name FROM departments ORDER BY name').all().filter((d) => !scope.dep || d.id === scope.dep);
+  res.json({
+    week_start: ws, windows: rows.map((w) => windowView(w, req)),
+    options: {
+      branches, departments, has_branches: hasBranches(),
+      all_branches: !hasBranches() || canTarget(scope, 0, scope.dep || 0),
+      all_departments: canTarget(scope, branches[0]?.id || 0, 0),
+    },
+  });
+});
+
+router.post('/windows', requirePerm('schedule.manage'), ah((req, res) => {
+  const body = validate(windowBody.extend({ week_start: zDate, location_id: z.coerce.number().int().min(0), department_id: z.coerce.number().int().min(0) }), req.body);
+  const ws = startOfWeek(body.week_start);
+  if (addDays(ws, 6) < todayLocal()) throw badRequest('אי אפשר לפתוח הגשה לשבוע שעבר');
+  if (body.closes_at && body.closes_at <= nowLocal()) throw badRequest('מועד הסגירה כבר עבר');
+  const loc = hasBranches() ? body.location_id : 0;
+  checkTarget(req, loc, body.department_id);
+  const db = getDb();
+  db.prepare(
+    `INSERT INTO schedule_submission_windows (week_start, location_id, department_id, closes_at, reminder_minutes, opened_by)
+     VALUES (@ws, @loc, @dep, @closes, @rem, @uid)
+     ON CONFLICT(week_start, location_id, department_id) DO UPDATE SET closes_at = excluded.closes_at, reminder_minutes = excluded.reminder_minutes,
+       reminder_sent_at = NULL, opened_at = datetime('now'), opened_by = excluded.opened_by, closed_at = NULL, closed_by = NULL`,
+  ).run({ ws, loc, dep: body.department_id, closes: body.closes_at || null, rem: body.reminder_minutes, uid: req.user.id });
+  const w = db.prepare('SELECT * FROM schedule_submission_windows WHERE week_start = ? AND location_id = ? AND department_id = ?').get(ws, loc, body.department_id);
+  const until = w.closes_at ? ` עד ${fmtWhen(w.closes_at)}` : '';
+  audit(req, { action: 'schedule.submission_open', entityType: 'schedule', entityId: w.id, description: `${req.user.display_name} פתח/ה הגשת זמינות לשבוע ${fmt(ws)} – ${targetLabel(w)}${until}`, newValue: { week_start: ws, location_id: loc, department_id: body.department_id, closes_at: w.closes_at, reminder_minutes: w.reminder_minutes } });
+  const people = windowEmployees(loc, body.department_id);
+  for (const id of people) {
+    notifyEmployee(id, { type: 'availability', title: 'הסידור פתוח להגשה', body: `שבוע ${fmt(ws)}${until}. כנסו והגישו את הזמינות שלכם.`, link: `/schedule?tab=submit&week=${ws}` });
+  }
+  res.status(201).json({ window: windowView(w, req), message: `ההגשה נפתחה ל${targetLabel(w)}. ${people.length} עובדים קיבלו התראה.` });
+}));
+
+router.put('/windows/:id', requirePerm('schedule.manage'), ah((req, res) => {
+  const id = paramId(req.params.id);
+  const body = validate(windowBody, req.body);
+  const db = getDb();
+  const w = db.prepare('SELECT * FROM schedule_submission_windows WHERE id = ?').get(id);
+  if (!w) throw notFound('ההגשה לא נמצאה');
+  checkTarget(req, w.location_id, w.department_id);
+  if (body.closes_at && body.closes_at <= nowLocal()) throw badRequest('מועד הסגירה כבר עבר');
+  const changed = (body.closes_at || null) !== w.closes_at || body.reminder_minutes !== w.reminder_minutes;
+  db.prepare(`UPDATE schedule_submission_windows SET closes_at = ?, reminder_minutes = ?, reminder_sent_at = CASE WHEN ? THEN NULL ELSE reminder_sent_at END WHERE id = ?`)
+    .run(body.closes_at || null, body.reminder_minutes, changed ? 1 : 0, id);
+  const after = db.prepare('SELECT * FROM schedule_submission_windows WHERE id = ?').get(id);
+  audit(req, { action: 'schedule.submission_update', entityType: 'schedule', entityId: id, description: `${req.user.display_name} עדכן/ה את הגשת הזמינות לשבוע ${fmt(w.week_start)} – ${targetLabel(w)}`, oldValue: { closes_at: w.closes_at, reminder_minutes: w.reminder_minutes }, newValue: { closes_at: after.closes_at, reminder_minutes: after.reminder_minutes } });
+  res.json({ window: windowView(after, req), message: 'ההגשה עודכנה' });
+}));
+
+router.post('/windows/:id/close', requirePerm('schedule.manage'), ah((req, res) => {
+  const id = paramId(req.params.id);
+  const db = getDb();
+  const w = db.prepare('SELECT * FROM schedule_submission_windows WHERE id = ?').get(id);
+  if (!w) throw notFound('ההגשה לא נמצאה');
+  checkTarget(req, w.location_id, w.department_id);
+  db.prepare("UPDATE schedule_submission_windows SET closed_at = datetime('now'), closed_by = ? WHERE id = ?").run(req.user.id, id);
+  audit(req, { action: 'schedule.submission_close', entityType: 'schedule', entityId: id, description: `${req.user.display_name} סגר/ה את הגשת הזמינות לשבוע ${fmt(w.week_start)} – ${targetLabel(w)}` });
+  res.json({ window: windowView(db.prepare('SELECT * FROM schedule_submission_windows WHERE id = ?').get(id), req), message: 'ההגשה נסגרה' });
 }));
 
 // ======================= manager: board =======================
@@ -442,7 +545,7 @@ router.post('/publish', requirePerm('schedule.manage'), ah((req, res) => {
           "SELECT id FROM shifts WHERE employee_id = ? AND status = 'scheduled' AND shift_type_id IS NULL AND start_at = ? AND end_at = ?",
         ).get(a.employee_id, start_at, end_at);
         if (manual) {
-          db.prepare("UPDATE shifts SET shift_type_id = ?, is_lead = ?, location_id = COALESCE(location_id, ?), updated_at = datetime('now') WHERE id = ?").run(a.shift_type_id, a.is_lead ? 1 : 0, loc || null, manual.id);
+          db.prepare("UPDATE shifts SET shift_type_id = ?, is_lead = ?, location_id = COALESCE(?, location_id), updated_at = datetime('now') WHERE id = ?").run(a.shift_type_id, a.is_lead ? 1 : 0, loc || null, manual.id); // the shift now belongs to the published branch
           stats.updated += 1;
         } else {
           const emp = db.prepare('SELECT position_id, location_id FROM employees WHERE id = ?').get(a.employee_id);

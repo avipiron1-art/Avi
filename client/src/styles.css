@@ -1056,3 +1056,14 @@ h2 { font-size: 1.12rem; font-weight: 700; letter-spacing: -.01em; }
 }
 .ring-center { gap: 0; }
 .ring-big { line-height: 1.2; margin: 4px 0; }
+
+/* availability submission windows (schedule board) */
+.sub-windows { display: flex; flex-direction: column; gap: 12px; }
+.sub-windows-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px 16px; flex-wrap: wrap; }
+.sub-windows-head h2 { gap: 8px; }
+.sub-windows-head p { margin-top: 2px; }
+.sub-windows-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.sub-windows-list li { display: flex; align-items: center; gap: 8px 12px; flex-wrap: wrap; padding: 10px 12px; border-radius: 14px; background: var(--surface-2); }
+.sub-windows-list li.is-closed { opacity: .75; }
+.sub-windows-main { display: flex; flex-direction: column; gap: 2px; flex: 1 1 200px; min-width: 0; }
+.sub-windows-actions { display: flex; align-items: center; gap: 4px; margin-inline-start: auto; }
