@@ -29,6 +29,8 @@ function AnnouncementForm({ item, onClose, onSaved }) {
   }));
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
+  const scopeAll = !user.scope || user.scope.all;
+  const branches = scopeAll ? meta.locations : user.scope.branches || [];
   const set = (k) => (e) => setV((s) => ({ ...s, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
   const save = async () => {
     setSaving(true);
@@ -52,10 +54,10 @@ function AnnouncementForm({ item, onClose, onSaved }) {
           <span><strong>הודעה קופצת עד לאישור</strong><br /><span className="subtle">ההודעה תקפוץ לעובד בכל כניסה לאפליקציה עד שילחץ "קראתי ואישרתי", ותוכלו לראות מי אישר.</span></span>
         </label>
         <div className="grid grid-2">
-          {!user.location_id && (
-            <Field label="סניף"><Select value={v.location_id} onChange={set('location_id')}><option value="">כל הסניפים</option>{meta.locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select></Field>
+          {(scopeAll || branches.length > 1) && (
+            <Field label="סניף"><Select value={v.location_id} onChange={set('location_id')}>{scopeAll ? <option value="">כל הסניפים</option> : <option value="">בחירת סניף…</option>}{branches.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select></Field>
           )}
-          <Field label="מחלקה"><Select value={v.department_id} onChange={set('department_id')}><option value="">כל המחלקות</option>{meta.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select></Field>
+          {!user.scope?.dep && <Field label="מחלקה"><Select value={v.department_id} onChange={set('department_id')}><option value="">כל המחלקות</option>{meta.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select></Field>}
           <Field label="מוצג עד (לא חובה)" error={errors.expires_on}><Input type="date" value={v.expires_on} onChange={set('expires_on')} /></Field>
         </div>
         {(v.urgency === 'high' || v.urgency === 'critical') && <div className="alert tone-warning"><AlertOctagon size={18} /><span>הודעה {URGENCY[v.urgency].label} נשלחת גם כהתראה לטלפון.</span></div>}

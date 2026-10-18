@@ -14,6 +14,7 @@ import {
 import { dateTime } from '../lib/format.js';
 import { applyBrandColor, useBranding } from '../lib/branding.jsx';
 import SecuritySettings from '../components/SecuritySettings.jsx';
+import { SCOPES, scopeLabel } from '../lib/scopes.js';
 import BackupSettings from '../components/BackupSettings.jsx';
 import MailSettings from '../components/MailSettings.jsx';
 
@@ -205,7 +206,7 @@ function shrinkImage(file, max) {
 // ---------------- departments / positions / locations ----------------
 const REF = {
   departments: { title: 'מחלקות', label: 'מחלקה', empty: { name: '', description: '', color: '#6366f1' } },
-  positions: { title: 'תפקידים', label: 'תפקיד', empty: { name: '', department_id: '' } },
+  positions: { title: 'תפקידים (סוגי עובדים)', label: 'תפקיד', empty: { name: '' } },
   locations: { title: 'סניפים ומיקומים', label: 'מיקום', empty: { name: '', address: '', is_active: true, latitude: '', longitude: '', radius_m: 150, require_location: false } },
 };
 
@@ -270,7 +271,7 @@ function RefList({ kind }) {
               {kind === 'departments' && <i style={{ width: 12, height: 12, borderRadius: 4, background: it.color }} />}
               <div className="grow">
                 <div style={{ fontWeight: 600 }}>{it.name}{kind === 'locations' && !it.is_active && <Badge> לא פעיל</Badge>}</div>
-                <div className="subtle">{kind === 'departments' ? `${it.employee_count} עובדים${it.description ? ` · ${it.description}` : ''}` : kind === 'positions' ? it.department_name || 'ללא מחלקה' : it.address}</div>
+                <div className="subtle">{kind === 'departments' ? `${it.employee_count} עובדים${it.description ? ` · ${it.description}` : ''}` : kind === 'positions' ? '' : it.address}</div>
               </div>
               <IconButton icon={Pencil} label="עריכה" small onClick={() => setEdit(kind === 'locations' ? { ...it, is_active: !!it.is_active, require_location: !!it.require_location, latitude: it.latitude ?? '', longitude: it.longitude ?? '' } : it)} />
               <IconButton icon={Trash2} label="מחיקה" small onClick={() => remove(it)} />
@@ -286,7 +287,7 @@ function RefList({ kind }) {
               <Field label="תיאור"><Textarea value={edit.description || ''} onChange={(e) => setEdit((s) => ({ ...s, description: e.target.value }))} style={{ minHeight: 60 }} /></Field>
               <Field label="צבע בלוח המשמרות"><Input type="color" value={edit.color} onChange={(e) => setEdit((s) => ({ ...s, color: e.target.value }))} style={{ width: 80, padding: 4 }} /></Field>
             </>}
-            {kind === 'positions' && <Field label="מחלקה"><Select value={edit.department_id ?? ''} onChange={(e) => setEdit((s) => ({ ...s, department_id: e.target.value }))}><option value="">ללא</option>{meta.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select></Field>}
+            {kind === 'positions' && <p className="subtle" style={{ margin: 0 }}>למשל מלצר, טבח, שוטף. התפקיד משותף לכל המחלקות והסניפים.</p>}
             {kind === 'locations' && <>
               <Field label="כתובת"><Input value={edit.address || ''} onChange={(e) => setEdit((s) => ({ ...s, address: e.target.value }))} /></Field>
               <label className="checkbox"><input type="checkbox" checked={edit.is_active} onChange={(e) => setEdit((s) => ({ ...s, is_active: e.target.checked }))} />פעיל</label>
@@ -308,7 +309,13 @@ function UserForm({ user: u, onClose, onSaved }) {
   const { values: v, set, errors, setErrors } = useForm({
     username: u?.username || '', email: u?.email || '', display_name: u?.display_name || '', role: u?.role || 'employee',
     employee_id: u?.employee_id ?? '', is_active: u ? !!u.is_active : true, password: '', location_id: u?.location_id ?? '',
+    department_id: u?.department_id ?? '', location_ids: u?.location_ids || [],
   });
+  const roleScope = meta.roles.find((r) => r.key === v.role)?.scope || (v.role === 'admin' ? 'all' : 'self');
+  const emp = meta.employees.find((e) => String(e.id) === String(v.employee_id));
+  const empLoc = emp && meta.locations.find((l) => l.id === emp.location_id)?.name;
+  const empDep = emp && meta.departments.find((d) => d.id === emp.department_id)?.name;
+  const toggleLoc = (id) => set('location_ids')(v.location_ids.includes(id) ? v.location_ids.filter((x) => x !== id) : [...v.location_ids, id]);
   const [resetting, setResetting] = useState(false);
   const resetMfa = async () => {
     setResetting(true);
@@ -329,14 +336,34 @@ function UserForm({ user: u, onClose, onSaved }) {
         <Field label="שם תצוגה *" error={errors.display_name}><Input value={v.display_name} onChange={set('display_name')} invalid={errors.display_name} /></Field>
         <Field label="שם משתמש *" error={errors.username}><Input value={v.username} onChange={set('username')} invalid={errors.username} dir="ltr" /></Field>
         <Field label="אימייל *" className="full" error={errors.email}><Input type="email" value={v.email} onChange={set('email')} invalid={errors.email} dir="ltr" /></Field>
-        <Field label="הרשאה *"><Select value={v.role} onChange={set('role')}>{meta.roles.map((r) => <option key={r.key} value={r.key}>{r.name}</option>)}</Select></Field>
+        <Field label="תפקיד *"><Select value={v.role} onChange={set('role')}>{meta.roles.map((r) => <option key={r.key} value={r.key}>{r.name}</option>)}</Select></Field>
         <Field label="כרטיס עובד משויך" error={errors.employee_id}><Select value={v.employee_id} onChange={set('employee_id')}><option value="">ללא</option>{meta.employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</Select></Field>
         {!u && <Field label="סיסמה ראשונית *" className="full" error={errors.password} hint="לפחות 8 תווים, כולל אות באנגלית וספרה"><Input type="text" value={v.password} onChange={set('password')} invalid={errors.password} dir="ltr" autoComplete="off" /></Field>}
-        {v.role !== 'admin' && meta.locations.length > 0 && (
-          <Field label="סניף" className="full" hint={v.role === 'shift_manager' ? 'מנהל סניף רואה ומנהל רק את העובדים והמשמרות של הסניף שלו' : undefined}>
-            <Select value={v.location_id} onChange={set('location_id')}><option value="">כל הסניפים</option>{meta.locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select>
-          </Field>
-        )}
+        <div className="full scope-box">
+          <div className="scope-box-head"><ShieldCheck size={16} /> <strong>תחום אחריות:</strong> {scopeLabel(roleScope)}</div>
+          {['branch', 'department'].includes(roleScope) && meta.locations.length > 0 && (
+            <Field label="הסניף שבאחריותו" hint={empLoc ? `ריק = לפי כרטיס העובד (${empLoc})` : 'חובה כשאין כרטיס עובד עם סניף'} error={errors.location_id}>
+              <Select value={v.location_id} onChange={set('location_id')}><option value="">{empLoc ? `לפי כרטיס העובד (${empLoc})` : 'בחירת סניף…'}</option>{meta.locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select>
+            </Field>
+          )}
+          {['department', 'department_all'].includes(roleScope) && (
+            <Field label="המחלקה שבאחריותו" hint={empDep ? `ריק = לפי כרטיס העובד (${empDep})` : 'חובה כשאין כרטיס עובד עם מחלקה'} error={errors.department_id}>
+              <Select value={v.department_id} onChange={set('department_id')}><option value="">{empDep ? `לפי כרטיס העובד (${empDep})` : 'בחירת מחלקה…'}</option>{meta.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>
+            </Field>
+          )}
+          {roleScope === 'branches' && (
+            <Field label="הסניפים שבאחריותו">
+              <div className="chips-select">
+                {meta.locations.map((l) => (
+                  <button key={l.id} type="button" className={`chip-toggle ${v.location_ids.includes(l.id) ? 'on' : ''}`} aria-pressed={v.location_ids.includes(l.id)} onClick={() => toggleLoc(l.id)}>{l.name}</button>
+                ))}
+              </div>
+            </Field>
+          )}
+          {roleScope === 'lead' && <p className="subtle" style={{ margin: 0 }}>ההרשאות של התפקיד פועלות רק בזמן משמרת שבה הוא משובץ כאחמ"ש, ורק על העובדים שבאותה משמרת.</p>}
+          {roleScope === 'self' && <p className="subtle" style={{ margin: 0 }}>רואה ומנהל רק את הדברים של עצמו.</p>}
+          {roleScope === 'all' && <p className="subtle" style={{ margin: 0 }}>אחראי על כל הסניפים וכל העובדים.</p>}
+        </div>
         <label className="checkbox full"><input type="checkbox" checked={v.is_active} onChange={set('is_active')} />משתמש פעיל (רשאי להתחבר)</label>
         {u && (u.totp_enabled || u.passkeys > 0) && (
           <div className="alert tone-info full" style={{ alignItems: 'center' }}>
@@ -436,7 +463,7 @@ function Users() {
                     <div className="flex flex-wrap" style={{ gap: 4 }}>
                       <Badge tone={u.role === 'admin' ? 'danger' : u.role === 'shift_manager' ? 'warning' : 'neutral'}>{u.role_name}</Badge>
                       {u.custom_permissions > 0 && <Badge tone="primary">+ הרשאות אישיות</Badge>}
-                      {u.location_name && <Badge>{u.location_name}</Badge>}
+                      {u.role !== "admin" && u.scope_label && <Badge tone={u.scope_missing ? "warning" : "neutral"}>{u.scope_missing ? `⚠ ${u.scope_label}` : u.scope_label}</Badge>}
                       {u.totp_enabled ? <Badge tone="success">2FA</Badge> : null}
                     </div>
                   </td>
@@ -476,7 +503,7 @@ function RoleEditor({ role, catalog, roles, onClose, onSaved }) {
   const toast = useToast();
   const isNew = !role;
   const locked = role?.locked;
-  const [v, setV] = useState({ name: role?.name || '', description: role?.description || '', permissions: role?.permissions || [] });
+  const [v, setV] = useState({ name: role?.name || '', description: role?.description || '', permissions: role?.permissions || [], scope: role?.scope || 'branch' });
   const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const toggle = (p) => setV((x) => ({ ...x, permissions: x.permissions.includes(p) ? x.permissions.filter((k) => k !== p) : [...x.permissions, p] }));
@@ -484,7 +511,7 @@ function RoleEditor({ role, catalog, roles, onClose, onSaved }) {
   const save = async () => {
     setSaving(true);
     try {
-      const body = { name: v.name, description: v.description, ...(locked ? {} : { permissions: v.permissions }) };
+      const body = { name: v.name, description: v.description, ...(locked ? {} : { permissions: v.permissions, scope: v.scope }) };
       const r = isNew ? await api.post('/roles', body) : await api.put(`/roles/${role.key}`, body);
       toast.success(r.message); onSaved(); onClose();
     } catch (e) { setErrors(e.fields || {}); toast.error(e); } finally { setSaving(false); }
@@ -497,8 +524,19 @@ function RoleEditor({ role, catalog, roles, onClose, onSaved }) {
           <Field label="שם התפקיד *" error={errors.name}><Input value={v.name} maxLength={40} onChange={(e) => setV((x) => ({ ...x, name: e.target.value }))} placeholder="לדוגמה: קופאי, טבח, מנהל אזור" /></Field>
           <Field label="תיאור (לא חובה)"><Input value={v.description || ''} maxLength={200} onChange={(e) => setV((x) => ({ ...x, description: e.target.value }))} /></Field>
         </div>
-        {locked ? <p className="muted">למנהל הראשי תמיד יש את כל ההרשאות. אפשר לשנות רק את השם.</p> : (
+        {locked ? <p className="muted">למנהל הראשי תמיד יש את כל ההרשאות על כל הרשת. אפשר לשנות רק את השם.</p> : (
           <>
+            <div>
+              <strong>על מי ההרשאות חלות? (תחום אחריות)</strong>
+              <div className="scope-options" role="radiogroup" style={{ marginTop: 8 }}>
+                {SCOPES.map((sc) => (
+                  <label key={sc.key} className={`scope-option ${v.scope === sc.key ? 'on' : ''}`}>
+                    <input type="radio" name="scope" checked={v.scope === sc.key} onChange={() => setV((x) => ({ ...x, scope: sc.key }))} />
+                    <span><strong>{sc.label}</strong><br /><span className="subtle">{sc.hint}</span></span>
+                  </label>
+                ))}
+              </div>
+            </div>
             <div className="flex flex-wrap between">
               <strong>הרשאות ({v.permissions.length})</strong>
               <Select value="" onChange={(e) => copyFrom(e.target.value)} style={{ width: 'auto' }} aria-label="העתקת הרשאות מתפקיד">
@@ -562,7 +600,7 @@ function Permissions() {
             <span className={`kpi-icon tone-${r.key === 'admin' ? 'danger' : r.key === 'shift_manager' ? 'warning' : r.custom ? 'primary' : 'neutral'}`}>{r.locked ? <Lock size={16} /> : <ShieldCheck size={16} />}</span>
             <div className="grow">
               <div style={{ fontWeight: 600 }}>{r.name}{r.custom && <>{" "}<Badge tone="primary">מותאם</Badge></>}</div>
-              <div className="subtle">{r.locked ? 'כל ההרשאות' : `${r.permissions.length} הרשאות`} · {r.users} משתמשים{r.description ? ` · ${r.description}` : ''}</div>
+              <div className="subtle">{r.locked ? 'כל ההרשאות' : `${r.permissions.length} הרשאות`} · {scopeLabel(r.scope)} · {r.users} משתמשים</div>
             </div>
             {canEdit && <IconButton icon={Pencil} label={`עריכת ${r.name}`} small onClick={() => setEdit(r)} />}
             {canEdit && r.custom && <IconButton icon={Trash2} label={`מחיקת ${r.name}`} small onClick={() => setDel(r)} />}

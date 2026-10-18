@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
   ChevronRight, ChevronLeft, CalendarCheck, Send, LayoutGrid, Clock, Plus, Pencil, Crown, X, Save, CheckCircle2, UserX,
-  AlertTriangle, Users, Lock, StickyNote, Check, Repeat,
+  AlertTriangle, Users, Lock, StickyNote, Check, Repeat, MapPin, RotateCcw,
 } from 'lucide-react';
 import { useApi, useHolidays } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
@@ -39,19 +39,31 @@ function WeekNav({ week, setWeek }) {
   );
 }
 
+/** Branch picker: shown when the user can see more than one branch. */
+function BranchPicker({ data, branch, setBranch }) {
+  const list = data?.branches || [];
+  if (list.length < 2) return list.length === 1 ? <Badge>{list[0].name}</Badge> : null;
+  return (
+    <Select value={String(data.location_id || branch || '')} onChange={(e) => setBranch(e.target.value)} aria-label="סניף" style={{ width: 'auto' }}>
+      {list.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+    </Select>
+  );
+}
+
 function LeadBadge() {
   return <span className="lead-badge"><Crown size={12} />אחמ״ש</span>;
 }
 
 // ============================ published schedule ============================
-function Published({ week, setWeek }) {
+function Published({ week, setWeek, branch, setBranch }) {
   const hol = useHolidays(week, addDays(week, 6));
-  const { data, loading, error, reload } = useApi('/schedule/published', { week });
+  const { data, loading, error, reload } = useApi('/schedule/published', { week, location_id: branch || undefined });
   const total = data?.days.reduce((t, d) => t + d.shifts.length, 0) || 0;
   return (
     <>
       <div className="schedule-toolbar">
         <WeekNav week={week} setWeek={setWeek} />
+        <BranchPicker data={data} branch={branch} setBranch={setBranch} />
         {data?.state.status === 'published' && <Badge tone="success" dot>פורסם{data.state.published_at && <> · <span className="ltr">{dateTime(data.state.published_at)}</span></>}</Badge>}
       </div>
       {error ? <div className="card"><ErrorState error={error} onRetry={reload} /></div> : loading && !data ? <div className="card"><SkeletonRows rows={5} h={70} /></div> : !total ? (
@@ -248,14 +260,14 @@ function StaffingMeter({ req, here, onEdit }) {
   );
 }
 
-function RequirementForm({ edit, onClose, onSaved }) {
+function RequirementForm({ edit, locationId, onClose, onSaved }) {
   const toast = useToast();
   const [saving, setSaving] = useState(false);
   const { values: v, set, errors, setErrors } = useForm({ required_workers: edit.required_workers, required_leads: edit.required_leads });
   const save = async (reset) => {
     setSaving(true);
     try {
-      const r = await api.put('/schedule/requirements', { date: edit.date, shift_type_id: edit.type.id, required_workers: Number(v.required_workers) || 0, required_leads: Number(v.required_leads) || 0, reset });
+      const r = await api.put('/schedule/requirements', { location_id: locationId || 0, date: edit.date, shift_type_id: edit.type.id, required_workers: Number(v.required_workers) || 0, required_leads: Number(v.required_leads) || 0, reset });
       toast.success(r.message); onSaved(); onClose();
     } catch (e) { setErrors(e.fields); toast.error(e); } finally { setSaving(false); }
   };
@@ -272,10 +284,10 @@ function RequirementForm({ edit, onClose, onSaved }) {
 }
 
 // ============================ employee: open shifts (first come) ============================
-function OpenShifts({ week, setWeek }) {
+function OpenShifts({ week, setWeek, branch, setBranch }) {
   const hol = useHolidays(week, addDays(week, 6));
   const toast = useToast();
-  const { data, loading, error, reload, setData } = useApi('/schedule/open', { week });
+  const { data, loading, error, reload, setData } = useApi('/schedule/open', { week, location_id: branch || undefined });
   const [busy, setBusy] = useState(null);
   const act = async (slot, asLead, cancel) => {
     const k = `${slot.date}|${slot.shift_type_id}|${asLead ? 'l' : 'w'}`;
@@ -283,7 +295,7 @@ function OpenShifts({ week, setWeek }) {
     try {
       const r = cancel
         ? await api.del(`/schedule/claim?date=${slot.date}&shift_type_id=${slot.shift_type_id}`)
-        : await api.post('/schedule/claim', { date: slot.date, shift_type_id: slot.shift_type_id, as_lead: asLead });
+        : await api.post('/schedule/claim', { date: slot.date, shift_type_id: slot.shift_type_id, as_lead: asLead, location_id: data.location_id || 0 });
       setData((dd) => ({ ...dd, slots: r.slots }));
       toast.success(r.message);
     } catch (e) { toast.error(e); reload({ silent: true }); } finally { setBusy(null); }
@@ -292,7 +304,7 @@ function OpenShifts({ week, setWeek }) {
   const anyOpen = data?.slots.some((s) => s.required_workers > 0);
   return (
     <>
-      <div className="schedule-toolbar"><WeekNav week={week} setWeek={setWeek} /></div>
+      <div className="schedule-toolbar"><WeekNav week={week} setWeek={setWeek} /><BranchPicker data={data} branch={branch} setBranch={setBranch} /></div>
       {loading && !data ? <div className="card"><SkeletonRows rows={6} h={60} /></div> : data.locked ? (
         <div className="card"><EmptyState icon={Lock} title="השבוע הזה כבר סגור לבחירה" text={data.status === 'published' ? 'הסידור פורסם. אפשר לראות אותו בלשונית "הסידור".' : 'השבוע הזה כבר עבר.'} /></div>
       ) : !anyOpen ? (
@@ -341,10 +353,10 @@ function OpenShifts({ week, setWeek }) {
   );
 }
 
-function Board({ week, setWeek }) {
+function Board({ week, setWeek, branch, setBranch }) {
   const hol = useHolidays(week, addDays(week, 6));
   const toast = useToast();
-  const { data, loading, error, reload } = useApi('/schedule/board', { week });
+  const { data, loading, error, reload } = useApi('/schedule/board', { week, location_id: branch || undefined });
   const [assignments, setAssignments] = useState([]);
   const [dirty, setDirty] = useState(false);
   const [cell, setCell] = useState(null);
@@ -382,7 +394,7 @@ function Board({ week, setWeek }) {
   const save = async (publish) => {
     setSaving(publish ? 'publish' : 'save');
     try {
-      const r = await api[publish ? 'post' : 'put'](publish ? '/schedule/publish' : '/schedule/board', { week_start: data.week_start, assignments, loaded_at: data.loaded_at });
+      const r = await api[publish ? 'post' : 'put'](publish ? '/schedule/publish' : '/schedule/board', { week_start: data.week_start, location_id: data.location_id || 0, assignments, loaded_at: data.loaded_at });
       toast.success(publish ? `${r.message} (${r.stats.created} חדשות, ${r.stats.updated} עודכנו, ${r.stats.cancelled} בוטלו)` : r.message);
       if (publish && r.warnings?.length) setWarnings(r.warnings);
       setDirty(false);
@@ -413,6 +425,7 @@ function Board({ week, setWeek }) {
     <>
       <div className="schedule-toolbar">
         <WeekNav week={week} setWeek={setWeek} />
+        <BranchPicker data={data} branch={branch} setBranch={(b) => (dirty ? confirm({ title: 'לעבור סניף?', message: 'יש שינויים שלא נשמרו בלוח הזה.', confirmText: 'מעבר בלי לשמור', onConfirm: () => setBranch(b) }) : setBranch(b))} />
         {published ? <Badge tone="success" dot>פורסם</Badge> : dirty ? <Badge tone="warning" dot>יש שינויים שלא נשמרו</Badge> : <Badge dot>טיוטה</Badge>}
       </div>
 
@@ -484,7 +497,7 @@ function Board({ week, setWeek }) {
         ))}
       </div>
       <Picker cell={cell} board={data} assignments={assignments} toggle={toggle} onClose={() => setCell(null)} />
-      {reqEdit && <RequirementForm edit={reqEdit} onClose={() => setReqEdit(null)} onSaved={() => reload({ silent: true })} />}
+      {reqEdit && <RequirementForm edit={reqEdit} locationId={data.location_id} onClose={() => setReqEdit(null)} onSaved={() => reload({ silent: true })} />}
       <Modal open={!!warnings} onClose={() => setWarnings(null)} title="הסידור פורסם, אבל יש חפיפות" footer={<Button variant="primary" onClick={() => setWarnings(null)}>הבנתי</Button>}>
         <p className="muted">לעובדים הבאים יש שתי משמרות חופפות. אפשר לתקן זאת בלוח המשמרות:</p>
         <ul className="conflict-list">{warnings?.map((w) => <li key={w}><AlertTriangle size={18} className="warn-icon" />{w}</li>)}</ul>
@@ -495,7 +508,7 @@ function Board({ week, setWeek }) {
 }
 
 // ============================ shift types ============================
-function TypeForm({ type, onClose, onSaved }) {
+function TypeForm({ type, view, onClose, onSaved }) {
   const toast = useToast();
   const [saving, setSaving] = useState(false);
   const { values: v, set, errors, setErrors } = useForm({
@@ -503,10 +516,13 @@ function TypeForm({ type, onClose, onSaved }) {
     sort_order: type?.sort_order ?? 0, is_active: type ? !!type.is_active : true,
     required_workers: type?.required_workers ?? 0, required_leads: type?.required_leads ?? 0,
   });
+  const branchName = view.branches?.find((b) => b.id === view.location_id)?.name;
+  // a shared type edited from a branch screen becomes that branch's own version
+  const branchVersion = type && type.shared && view.mode === 'branch';
   const save = async () => {
     setSaving(true);
     try {
-      const body = { ...v, sort_order: Number(v.sort_order) || 0, required_workers: Number(v.required_workers) || 0, required_leads: Number(v.required_leads) || 0 };
+      const body = { ...v, location_id: view.location_id || 0, sort_order: Number(v.sort_order) || 0, required_workers: Number(v.required_workers) || 0, required_leads: Number(v.required_leads) || 0 };
       const r = type ? await api.put(`/schedule/shift-types/${type.id}`, body) : await api.post('/schedule/shift-types', body);
       toast.success(r.message); onSaved(); onClose();
     } catch (e) { setErrors(e.fields); toast.error(e); } finally { setSaving(false); }
@@ -514,41 +530,75 @@ function TypeForm({ type, onClose, onSaved }) {
   return (
     <Modal open onClose={onClose} title={type ? 'עריכת משמרת' : 'משמרת חדשה'} footer={<><Button onClick={onClose}>ביטול</Button><Button variant="primary" onClick={save} loading={saving}>שמירה</Button></>}>
       <div className="form-grid">
+        {view.mode === 'branch' && branchName && (
+          <div className="alert tone-info full"><MapPin size={18} /><span>{branchVersion
+            ? `זו משמרת משותפת לכל הרשת. השינוי יחול רק על ${branchName} – בשאר הסניפים היא תישאר כמו שהיא.`
+            : type ? `משמרת של ${branchName}.` : `המשמרת תתווסף ל${branchName} בלבד.`}</span></div>
+        )}
+        {view.mode === 'chain' && view.branches?.length > 0 && <div className="alert tone-warning full"><Users size={18} /><span>{type ? 'השינוי יחול על כל הסניפים שמשתמשים במשמרת הזו.' : 'המשמרת תתווסף לכל הסניפים.'}</span></div>}
         <Field label="שם המשמרת *" className="full" error={errors.name}><Input value={v.name} onChange={set('name')} placeholder="לדוגמה: בוקר" invalid={errors.name} /></Field>
         <Field label="שעת התחלה *" error={errors.start_time}><Input type="time" value={v.start_time} onChange={set('start_time')} /></Field>
         <Field label="שעת סיום *" error={errors.end_time} hint={v.end_time <= v.start_time ? 'מסתיימת למחרת' : undefined}><Input type="time" value={v.end_time} onChange={set('end_time')} /></Field>
         <Field label="עובדים דרושים (ברירת מחדל)" error={errors.required_workers} hint="0 = לא פתוח לבחירה עצמית"><Input type="number" min="0" max="50" value={v.required_workers} onChange={set('required_workers')} /></Field>
         <Field label="מתוכם אחמ״שים" error={errors.required_leads}><Input type="number" min="0" max="10" value={v.required_leads} onChange={set('required_leads')} /></Field>
         <Field label="סדר תצוגה" hint="מספר קטן מוצג ראשון"><Input type="number" min="0" max="99" value={v.sort_order} onChange={set('sort_order')} /></Field>
-        <div className="field"><label>&nbsp;</label><label className="checkbox"><input type="checkbox" checked={v.is_active} onChange={set('is_active')} />פעילה</label></div>
+        <div className="field"><label>&nbsp;</label><label className="checkbox"><input type="checkbox" checked={v.is_active} onChange={set('is_active')} />{branchVersion ? `פעילה ב${branchName}` : 'פעילה'}</label></div>
       </div>
     </Modal>
   );
 }
 
 function ShiftTypes() {
-  const { data, loading, reload } = useApi('/schedule/shift-types', { all: 1 });
+  const toast = useToast();
+  const { user } = useAuth();
+  const [loc, setLoc] = useState(user.scope?.all ? '0' : ''); // chain managers start with the shared list
+  const { data, loading, reload } = useApi('/schedule/shift-types', { all: 1, location_id: loc === '' ? undefined : loc });
   const [form, setForm] = useState(null);
+  const restore = async (t) => {
+    try { const r = await api.post(`/schedule/shift-types/${t.id}/restore`, { location_id: data.location_id }); toast.success(r.message); reload({ silent: true }); } catch (e) { toast.error(e); }
+  };
+  const branches = data?.branches || [];
+  const current = data ? String(data.mode === 'chain' ? 0 : data.location_id) : '';
   return (
-    <Card title="המשמרות בעסק" icon={Clock} pad={false} actions={<Button size="sm" variant="primary" icon={Plus} onClick={() => setForm({})}>משמרת חדשה</Button>}>
+    <Card title="המשמרות" icon={Clock} pad={false}
+      actions={<>
+        {(branches.length > 1 || (data?.can_chain && branches.length > 0)) && (
+          <Select value={current} onChange={(e) => setLoc(e.target.value)} aria-label="סניף" style={{ width: 'auto' }}>
+            {data?.can_chain && <option value="0">כל הרשת (משותף)</option>}
+            {branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+          </Select>
+        )}
+        <Button size="sm" variant="primary" icon={Plus} onClick={() => setForm({})} disabled={!data}>משמרת חדשה</Button>
+      </>}>
       {loading && !data ? <SkeletonRows rows={3} /> : !data.types.length ? (
-        <EmptyState icon={Clock} title="אין משמרות" text="הגדירו את המשמרות בעסק, למשל בוקר 07:00–15:00 וערב 15:00–23:00." action={<Button variant="primary" icon={Plus} onClick={() => setForm({})}>משמרת חדשה</Button>} />
+        <EmptyState icon={Clock} title="אין משמרות" text="הגדירו את המשמרות, למשל בוקר 07:00–15:00 וערב 15:00–23:00." action={<Button variant="primary" icon={Plus} onClick={() => setForm({})}>משמרת חדשה</Button>} />
       ) : (
         <div className="list">
           {data.types.map((t) => (
-            <div key={t.id} className="list-item">
+            <div key={t.id} className={`list-item ${t.hidden ? 'is-muted' : ''}`}>
               <span className="activity-icon tone-primary"><Clock size={16} /></span>
               <div className="grow">
-                <div className="flex"><strong>{t.name}</strong>{!t.is_active && <Badge>לא פעילה</Badge>}</div>
+                <div className="flex flex-wrap">
+                  <strong>{t.name}</strong>
+                  {data.mode === 'branch' && (t.shared ? <Badge>משותפת</Badge> : <Badge tone="primary">של הסניף</Badge>)}
+                  {t.hidden && <Badge tone="warning">מוסתרת בסניף</Badge>}
+                  {!t.is_active && <Badge>לא פעילה</Badge>}
+                </div>
                 <div className="subtle"><span className="ltr">{typeTime(t)}{t.end_time <= t.start_time ? ' (+1)' : ''}</span>{t.required_workers > 0 && ` · ${t.required_workers} עובדים${t.required_leads ? `, ${t.required_leads} אחמ״ש` : ''}`}</div>
               </div>
-              <IconButton icon={Pencil} label="עריכה" small onClick={() => setForm(t)} />
+              {t.hidden
+                ? <Button size="sm" variant="ghost" icon={RotateCcw} onClick={() => restore(t)}>החזרה</Button>
+                : <IconButton icon={Pencil} label="עריכה" small onClick={() => setForm(t)} />}
             </div>
           ))}
         </div>
       )}
-      <p className="subtle" style={{ padding: '12px 16px' }}>שינוי שעות של משמרת יחול על סידורים שיפורסמו מעכשיו. משמרת שלא בשימוש אפשר להפוך ל"לא פעילה".</p>
-      {form && <TypeForm type={form.id ? form : null} onClose={() => setForm(null)} onSaved={() => reload({ silent: true })} />}
+      <p className="subtle" style={{ padding: '12px 16px', margin: 0 }}>
+        {data?.mode === 'branch'
+          ? 'משמרת "משותפת" מוגדרת לכל הרשת. שינוי שלה כאן יוצר גרסה לסניף הזה בלבד, וביטול הסימון "פעילה" מסתיר אותה רק בסניף. שינויים יחולו על סידורים שיפורסמו מעכשיו.'
+          : 'שינוי שעות של משמרת יחול על סידורים שיפורסמו מעכשיו. משמרת שלא בשימוש אפשר להפוך ל"לא פעילה".'}
+      </p>
+      {form && data && <TypeForm type={form.id ? form : null} view={data} onClose={() => setForm(null)} onSaved={() => reload({ silent: true })} />}
     </Card>
   );
 }
@@ -667,7 +717,8 @@ export default function Schedule() {
     { value: 'published', label: 'הסידור', icon: CalendarCheck },
     ...(user.employee_id ? [{ value: 'open', label: 'משמרות פתוחות', icon: Plus }, { value: 'submit', label: 'הגשת זמינות', icon: Send }] : []),
     ...(user.employee_id || can('shifts.manage') || manage ? [{ value: 'swaps', label: 'לוח החלפות', icon: Repeat }] : []),
-    ...(manage ? [{ value: 'board', label: 'שיבוץ', icon: LayoutGrid }, { value: 'types', label: 'הגדרת משמרות', icon: Clock }] : []),
+    ...(manage ? [{ value: 'board', label: 'שיבוץ', icon: LayoutGrid }] : []),
+    ...(manage ? [{ value: 'types', label: 'הגדרת משמרות', icon: Clock }] : []),
   ];
   const tab = tabs.some((t) => t.value === params.get('tab')) ? params.get('tab') : 'published';
   const thisWeek = startOfWeek(localToday());
@@ -679,15 +730,17 @@ export default function Schedule() {
     return n;
   }, { replace: true });
   const setWeek = (w) => update({ week: w });
+  const branch = params.get('location_id') || '';
+  const setBranch = (b) => update({ location_id: b || null });
 
   return (
     <>
       <PageHeader title="סידור עבודה" subtitle={manage ? 'העובדים מגישים זמינות, אתם משבצים ומסמנים אחמ״ש, ובסוף מאשרים ומפרסמים' : 'הגשת זמינות לשבוע הבא וצפייה בסידור שפורסם'} />
       <Tabs tabs={tabs} value={tab} onChange={(t) => update({ tab: t, week: null })} />
-      {tab === 'published' && <Published week={week} setWeek={setWeek} />}
-      {tab === 'open' && <OpenShifts week={week} setWeek={setWeek} />}
+      {tab === 'published' && <Published week={week} setWeek={setWeek} branch={branch} setBranch={setBranch} />}
+      {tab === 'open' && <OpenShifts week={week} setWeek={setWeek} branch={branch} setBranch={setBranch} />}
       {tab === 'submit' && <Submit week={week} setWeek={setWeek} />}
-      {tab === 'board' && <Board week={week} setWeek={setWeek} />}
+      {tab === 'board' && <Board week={week} setWeek={setWeek} branch={branch} setBranch={setBranch} />}
       {tab === 'types' && <ShiftTypes />}
       {tab === 'swaps' && <Swaps />}
     </>

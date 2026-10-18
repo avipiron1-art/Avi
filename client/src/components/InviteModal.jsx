@@ -17,6 +17,7 @@ export default function InviteModal({ onClose }) {
   const [copied, setCopied] = useState(false);
   const { values: v, set } = useForm({ label: '', max_uses: 1, expires_days: 7, department_id: '', position_id: '', location_id: '', emails: '' });
   const [errors, setErrors] = useState({});
+  const inviteBranches = user.scope && !user.scope.all ? user.scope.branches || [] : meta.locations;
 
   const create = async () => {
     setSaving(true);
@@ -65,7 +66,7 @@ export default function InviteModal({ onClose }) {
                 <Input className="ltr" value={v.emails} onChange={set('emails')} placeholder="dana@gmail.com, avi@gmail.com" inputMode="email" />
               </Field>
             )}
-            <Field label="סניף"><Select value={v.location_id} onChange={set('location_id')}><option value="">ללא</option>{meta.locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select></Field>
+            <Field label="סניף"><Select value={v.location_id} onChange={set('location_id')}><option value="">{inviteBranches.length === 1 && !user.scope?.all ? inviteBranches[0].name : 'ללא'}</option>{inviteBranches.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select></Field>
           </div>
           <div className="mt"><Button variant="primary" icon={Link2} onClick={create} loading={saving}>יצירת קישור</Button></div>
         </>

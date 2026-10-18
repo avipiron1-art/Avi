@@ -12,7 +12,7 @@ import { payrollCsv, payrollWorkbook, sendWorkbook, slipJson } from '../services
 const router = Router();
 
 const filtersSchema = z.object({
-  from: zDate, to: zDate, employee_id: zOptId, department_id: zOptId, position_id: zOptId,
+  from: zDate, to: zDate, employee_id: zOptId, department_id: zOptId, position_id: zOptId, location_id: zOptId,
   format: z.enum(['xlsx', 'csv']).optional(),
 });
 
@@ -25,7 +25,7 @@ function parseFilters(query) {
 
 router.get('/', ah((req, res) => {
   const f = parseFilters(req.query);
-  res.json(buildReport({ ...f, location_id: req.user.location_id || null }, { includeCost: req.can('employees.wage') }));
+  res.json(buildReport({ ...f, scope: req.user.scope }, { includeCost: req.can('employees.wage') }));
 }));
 
 function columns(includeCost) {
@@ -52,7 +52,7 @@ const safeCell = (v) => (typeof v === 'string' && /^[=+\-@\t\r]/.test(v) ? `'${v
 router.get('/export', ah(async (req, res) => {
   const f = parseFilters(req.query);
   const includeCost = req.can('employees.wage');
-  const report = buildReport({ ...f, location_id: req.user.location_id || null }, { includeCost });
+  const report = buildReport({ ...f, scope: req.user.scope }, { includeCost });
   const cols = columns(includeCost);
   const filename = `report_${f.from}_${f.to}`;
   audit(req, { action: 'report.export', entityType: 'report', description: `${req.user.display_name} ייצא/ה דוח ${f.format === 'csv' ? 'CSV' : 'Excel'} לתקופה ${f.from} – ${f.to}`, newValue: f });
@@ -93,10 +93,10 @@ router.get('/export', ah(async (req, res) => {
 // ---------- monthly payroll hours (for the accountant) ----------
 
 function payrollFor(req, extra = {}) {
-  const q = validate(z.object({ month: zMonth, department_id: zOptId, employee_id: zOptId, format: z.enum(['xlsx', 'csv', 'json']).default('json') }), req.query);
+  const q = validate(z.object({ month: zMonth, department_id: zOptId, employee_id: zOptId, location_id: zOptId, format: z.enum(['xlsx', 'csv', 'json']).default('json') }), req.query);
   if (!q.month) q.month = todayLocal().slice(0, 7);
   const { from, to } = monthRange(`${q.month}-01`);
-  const data = buildPayroll({ from, to, department_id: q.department_id, employee_id: q.employee_id, location_id: req.user.location_id || null, ...extra }, { includeWage: req.can('employees.wage') });
+  const data = buildPayroll({ from, to, department_id: q.department_id, employee_id: q.employee_id, location_id: q.location_id || null, scope: req.user.scope, ...extra }, { includeWage: req.can('employees.wage') });
   if (!req.can('employees.manage')) for (const e of data.employees) e.national_id = '';
   return { q, data };
 }

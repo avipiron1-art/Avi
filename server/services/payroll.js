@@ -11,6 +11,7 @@ import { getNumberSetting } from './settings.js';
 import { holidaysBetween, isRestDay } from './holidays.js';
 import { addDays, minutesBetween, nowLocal, toMs, fromMs } from '../lib/time.js';
 import { computeAttendance } from '../lib/attendance.js';
+import { scopeWhere } from './scope.js';
 
 export const BUCKETS = ['regular', 'ot1', 'ot2', 'rest', 'rest_ot1', 'rest_ot2'];
 
@@ -73,7 +74,7 @@ export function splitDay(intervals, { dailyMinutes, tier1Minutes, restCache = ne
  * Monthly (or any range) payroll data.
  * Returns { from, to, labels, rates, employees: [{ ...employee, buckets, days: [...] }] }.
  */
-export function buildPayroll({ from, to, employee_id = null, department_id = null, location_id = null }, { includeWage = false } = {}) {
+export function buildPayroll({ from, to, employee_id = null, department_id = null, location_id = null, scope = null }, { includeWage = false } = {}) {
   const db = getDb();
   const now = nowLocal();
   const where = ["s.status = 'scheduled'", 's.start_at >= @from', 's.start_at < @to'];
@@ -81,6 +82,8 @@ export function buildPayroll({ from, to, employee_id = null, department_id = nul
   if (employee_id) { where.push('s.employee_id = @employee_id'); p.employee_id = employee_id; }
   if (department_id) { where.push('e.department_id = @department_id'); p.department_id = department_id; }
   if (location_id) { where.push('COALESCE(s.location_id, e.location_id) = @location_id'); p.location_id = location_id; }
+  const sw = scopeWhere(scope, { e: 'e', s: 's' });
+  if (sw) where.push(sw.replace(/^ AND /, ''));
   const rows = db.prepare(
     `SELECT s.id, s.employee_id, s.start_at, s.end_at, a.clock_in_at, a.clock_out_at, a.marked_absent, a.note,
             e.first_name || ' ' || e.last_name AS employee_name, e.employee_code, e.national_id, e.hourly_wage,

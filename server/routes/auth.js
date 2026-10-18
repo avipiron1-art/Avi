@@ -16,6 +16,7 @@ import {
   newTotpSecret, verifyTotp, otpauthUrl, newRecoveryCodes, useRecoveryCode, putChallenge, getChallenge, dropChallenge, relyingParty,
 } from '../services/mfa.js';
 import { getSetting } from '../services/settings.js';
+import { describeScope, scopeBranches } from '../services/scope.js';
 
 const router = Router();
 
@@ -48,7 +49,9 @@ export function publicUser(user) {
     role_name: user.role_name,
     employee_id: user.employee_id,
     location_id: user.location_id ?? null,
-    lead_scope: user.lead_scope || null, // on duty as shift lead right now (temporary rights)
+    lead_scope: user.lead_scope || null, // on duty as shift lead right now
+    // responsibility scope: who this user's permissions apply to, and the branches they can pick on screens
+    scope: user.scope ? { type: user.scope.type, label: describeScope(user.scope), all: !!user.scope.all, dep: user.scope.dep || null, branches: scopeBranches(user.scope), missing: user.scope.missing || null } : null,
     permissions: [...user.permissions],
   };
 }

@@ -8,7 +8,7 @@ import { localToday } from '../lib/format.js';
 
 const EMPTY = {
   employee_code: '', first_name: '', last_name: '', phone: '', email: '', position_id: '', department_id: '', location_id: '',
-  start_date: localToday(), status: 'active', hourly_wage: '', avatar: null, can_lead: false, national_id: '',
+  start_date: localToday(), status: 'active', hourly_wage: '', avatar: null, can_lead: false, national_id: '', extra_location_ids: [],
 };
 
 /** Resize the selected image client-side to a small square JPEG data URL. */
@@ -49,7 +49,7 @@ export default function EmployeeForm({ open, onClose, employee, onSaved, onDelet
       onDeleted?.(employee);
     } catch (e) { toast.error(e); } finally { setDeleting(false); }
   };
-  const init = employee ? { ...Object.fromEntries(Object.keys(EMPTY).map((k) => [k, employee[k] ?? ''])), can_lead: !!employee.can_lead } : EMPTY;
+  const init = employee ? { ...Object.fromEntries(Object.keys(EMPTY).map((k) => [k, employee[k] ?? ''])), can_lead: !!employee.can_lead, extra_location_ids: employee.extra_location_ids || [] } : EMPTY;
   const { values: v, set, setValues, errors, setErrors } = useForm({ ...init, avatar: employee?.avatar || null });
 
   const onFile = async (e) => {
@@ -74,7 +74,12 @@ export default function EmployeeForm({ open, onClose, employee, onSaved, onDelet
     } finally { setSaving(false); }
   };
 
-  const positions = meta.positions.filter((p) => !v.department_id || !p.department_id || String(p.department_id) === String(v.department_id));
+  const positions = meta.positions; // job types are shared by all departments and branches
+  // a branch / department manager can only place people inside their responsibility
+  const scope = user?.scope;
+  const branches = scope && !scope.all && scope.branches?.length ? scope.branches : meta.locations;
+  const departments = scope?.dep ? meta.departments.filter((d) => d.id === scope.dep) : meta.departments;
+  const toggleExtra = (id) => set('extra_location_ids')(v.extra_location_ids.includes(id) ? v.extra_location_ids.filter((x) => x !== id) : [...v.extra_location_ids, id]);
 
   return (
     <Modal open={open} onClose={onClose} wide title={employee ? 'עריכת עובד' : 'הוספת עובד חדש'}
@@ -117,14 +122,23 @@ export default function EmployeeForm({ open, onClose, employee, onSaved, onDelet
           <Field label="טלפון" error={errors.phone}><Input type="tel" value={v.phone} onChange={set('phone')} invalid={errors.phone} dir="ltr" /></Field>
           <Field label="אימייל" error={errors.email}><Input type="email" value={v.email} onChange={set('email')} invalid={errors.email} dir="ltr" /></Field>
           <Field label="מחלקה" error={errors.department_id}>
-            <Select value={v.department_id} onChange={set('department_id')}><option value="">ללא</option>{meta.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>
+            <Select value={v.department_id} onChange={set('department_id')}>{!scope?.dep && <option value="">ללא</option>}{departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>
           </Field>
           <Field label="תפקיד" error={errors.position_id}>
             <Select value={v.position_id} onChange={set('position_id')}><option value="">ללא</option>{positions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select>
           </Field>
-          <Field label="סניף / מיקום">
-            <Select value={v.location_id} onChange={set('location_id')}><option value="">ללא</option>{meta.locations.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select>
+          <Field label="סניף עיקרי" error={errors.location_id}>
+            <Select value={v.location_id} onChange={set('location_id')}><option value="">{scope && !scope.all && branches.length === 1 ? branches[0].name : 'ללא'}</option>{branches.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select>
           </Field>
+          {meta.locations.length > 1 && (
+            <Field label="עובד/ת גם בסניפים" className="full" hint="העובד יופיע גם בלוח השיבוץ ובסידור של הסניפים האלה">
+              <div className="chips-select">
+                {branches.filter((l) => String(l.id) !== String(v.location_id)).map((l) => (
+                  <button key={l.id} type="button" className={`chip-toggle ${v.extra_location_ids.includes(l.id) ? 'on' : ''}`} aria-pressed={v.extra_location_ids.includes(l.id)} onClick={() => toggleExtra(l.id)}>{l.name}</button>
+                ))}
+              </div>
+            </Field>
+          )}
           <Field label="סטטוס">
             <Select value={v.status} onChange={set('status')}><option value="active">פעיל</option><option value="vacation">בחופשה</option><option value="inactive">לא פעיל</option></Select>
           </Field>

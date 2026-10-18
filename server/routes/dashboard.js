@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { getDb } from '../db/index.js';
 import { SHIFT_COLUMNS, SHIFT_JOINS } from '../lib/serialize.js';
 import { computeAttendance } from '../lib/attendance.js';
+import { scopeWhere } from '../services/scope.js';
 import { addDays, monthRange, nowLocal, todayLocal, startOfWeek } from '../lib/time.js';
 
 const router = Router();
@@ -26,9 +27,10 @@ const shiftBucket = (startAt) => {
 
 function managerDashboard(req) {
   const db = getDb();
-  // Branch manager: everything below is limited to their branch.
-  const loc = req.user.location_id || null;
-  const shiftsBetween = (from, to) => shiftsBetweenAll(from, to, loc ? 'AND COALESCE(s.location_id, e.location_id) = @loc' : '', loc ? { loc } : {});
+  // Everything below is limited to the people this manager is responsible for.
+  const sc = req.user.scope;
+  const shiftsBetween = (from, to) => shiftsBetweenAll(from, to, scopeWhere(sc, { e: 'e', s: 's', includeSelf: false }));
+  const empScope = scopeWhere(sc, { e: 'e', includeSelf: false });
   const now = nowLocal();
   const today = todayLocal();
   const { from: mFrom } = monthRange(today);
@@ -41,20 +43,23 @@ function managerDashboard(req) {
     .filter((s) => (s.start_at <= now && s.end_at > now) || (s.clock_in_at && !s.clock_out_at && s.end_at > now));
 
   const kpis = {
-    active_employees: db.prepare(`SELECT COUNT(*) c FROM employees WHERE status = 'active' ${loc ? 'AND location_id = ?' : ''}`).get(...(loc ? [loc] : [])).c,
+    active_employees: db.prepare(`SELECT COUNT(*) c FROM employees e WHERE e.status = 'active' ${empScope}`).get().c,
     on_shift_now: current.filter((s) => s.attendance_status === 'on_shift').length,
     scheduled_now: current.length,
     today_employees: new Set(todays.map((s) => s.employee_id)).size,
     month_hours: +(thisMonth.reduce((t, s) => t + s.worked_minutes, 0) / 60).toFixed(1),
-    pending_requests: req.can('requests.review') ? db.prepare("SELECT COUNT(*) c FROM requests WHERE status = 'pending'").get().c : null,
-    open_tasks: db.prepare("SELECT COUNT(*) c FROM tasks WHERE status IN ('new','in_progress')").get().c,
+    pending_requests: req.can('requests.review') ? db.prepare(`SELECT COUNT(*) c FROM requests rq JOIN employees e ON e.id = rq.employee_id WHERE rq.status = 'pending' ${empScope}`).get().c : null,
+    open_tasks: db.prepare(`SELECT COUNT(*) c FROM tasks t LEFT JOIN employees e ON e.id = t.assignee_id WHERE t.status IN ('new','in_progress')
+      ${sc.all ? '' : `AND (t.created_by = ${Number(req.user.id)} OR (e.id IS NOT NULL ${empScope}))`}`).get().c,
   };
 
   const upcoming = shiftsBetween(now, `${addDays(today, 8)}T00:00`).slice(0, 10);
 
   const activity = db.prepare(
     `SELECT id, user_name, action, description, created_at FROM audit_logs
-     WHERE action IN (${ACTIVITY_ACTIONS.map(() => '?').join(',')}) ORDER BY id DESC LIMIT 12`,
+     WHERE action IN (${ACTIVITY_ACTIONS.map(() => '?').join(',')})
+     ${sc.all ? '' : `AND (user_id = ${Number(req.user.id)} OR user_id IN (SELECT u.id FROM users u JOIN employees e ON e.id = u.employee_id WHERE 1 ${empScope}))`}
+     ORDER BY id DESC LIMIT 12`,
   ).all(...ACTIVITY_ACTIONS);
 
   // Charts

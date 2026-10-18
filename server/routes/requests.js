@@ -5,6 +5,7 @@ import { validate, z, zText, zOptText, zOptId, zDate, paramId } from '../lib/val
 import { requirePerm, requireEmployee } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
 import { notifyEmployee, notifyPermission } from '../services/notify.js';
+import { employeeInScope, scopeWhere } from '../services/scope.js';
 
 const router = Router();
 export const REQUEST_TYPE_LABEL = {
@@ -28,7 +29,8 @@ router.get('/', (req, res) => {
     where.push('rq.employee_id = @own'); p.own = req.user.employee_id;
   } else {
     if (employee_id) { where.push('rq.employee_id = @employee_id'); p.employee_id = Number(employee_id); }
-    if (req.user.location_id) { where.push('(e.location_id = @scope_loc OR rq.employee_id = @self)'); p.scope_loc = req.user.location_id; p.self = req.user.employee_id || -1; }
+    const scope = scopeWhere(req.user.scope, { e: 'e' }); // requests of people this manager is responsible for (+ own)
+    if (scope) where.push(scope.replace(/^ AND /, ''));
   }
   if (status && STATUS_LABEL[status]) { where.push('rq.status = @status'); p.status = status; }
   if (type && REQUEST_TYPE_LABEL[type]) { where.push('rq.type = @type'); p.type = type; }
@@ -61,7 +63,7 @@ router.post('/', requireEmployee, ah((req, res) => {
   ).run(req.user.employee_id, data.type, data.start_date, data.end_date, data.shift_id, data.swap_with_id, data.details).lastInsertRowid;
   const r = getRequest(id);
   audit(req, { action: 'request.create', entityType: 'request', entityId: id, description: `${r.employee_name} הגיש/ה ${REQUEST_TYPE_LABEL[r.type]}`, newValue: data });
-  notifyPermission('requests.review', { type: 'request_new', title: `${REQUEST_TYPE_LABEL[r.type]} חדשה`, body: `${r.employee_name} · ${r.start_date}${r.end_date ? ` – ${r.end_date}` : ''}`, link: '/requests' }, { exceptUserId: req.user.id });
+  notifyPermission('requests.review', { type: 'request_new', title: `${REQUEST_TYPE_LABEL[r.type]} חדשה`, body: `${r.employee_name} · ${r.start_date}${r.end_date ? ` – ${r.end_date}` : ''}`, link: '/requests' }, { exceptUserId: req.user.id, about: { employeeId: req.user.employee_id } });
   res.status(201).json({ request: r, message: 'הבקשה נשלחה בהצלחה וממתינה לאישור' });
 }));
 
@@ -71,6 +73,8 @@ router.patch('/:id/review', requirePerm('requests.review'), ah((req, res) => {
   if (!r) throw notFound('הבקשה לא נמצאה');
   const data = validate(z.object({ status: z.enum(['approved', 'rejected']), response: zOptText(1000) }), req.body);
   if (r.employee_id === req.user.employee_id) throw forbidden('לא ניתן לאשר בקשה שהגשת בעצמך');
+  if (!employeeInScope(req.user.scope, r.employee_id, { includeSelf: false })) throw forbidden('הבקשה של עובד שלא באחריותך');
+  if (r.type === 'shift_swap' && r.swap_with_id && data.status === 'approved' && !employeeInScope(req.user.scope, r.swap_with_id, { includeSelf: false })) throw forbidden('העובד המחליף לא באחריותך');
   const db = getDb();
   db.transaction(() => {
     db.prepare("UPDATE requests SET status = ?, manager_response = ?, reviewed_by = ?, reviewed_at = datetime('now') WHERE id = ?")
@@ -135,7 +139,7 @@ router.put('/availability/me', requireEmployee, ah((req, res) => {
   );
   db.transaction(() => { for (const d of days) up.run(req.user.employee_id, d.weekday, d.available ? 1 : 0, d.from_time, d.to_time, d.note); })();
   audit(req, { action: 'availability.update', entityType: 'employee', entityId: req.user.employee_id, description: `${req.user.display_name} עדכן/ה זמינות שבועית`, newValue: days });
-  notifyPermission('shifts.manage', { type: 'availability', title: 'עדכון זמינות', body: `${req.user.display_name} עדכן/ה את הזמינות השבועית`, link: `/employees/${req.user.employee_id}` }, { exceptUserId: req.user.id });
+  notifyPermission('shifts.manage', { type: 'availability', title: 'עדכון זמינות', body: `${req.user.display_name} עדכן/ה את הזמינות השבועית`, link: `/employees/${req.user.employee_id}` }, { exceptUserId: req.user.id, about: { employeeId: req.user.employee_id } });
   res.json({ availability: readAvailability(req.user.employee_id), message: 'הזמינות נשמרה בהצלחה' });
 }));
 

@@ -6,6 +6,7 @@ import { ah, badRequest, conflict, forbidden, notFound } from '../lib/errors.js'
 import { validate, z, zText, zOptText, zEmail, zPassword, zOptId, paramId } from '../lib/validate.js';
 import { requirePerm } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
+import { scopeWhere, describeScope, SCOPES, SCOPE_KEYS, clearScopeCache, resolveScope, employeeInScope as employeeInScopeFn } from '../services/scope.js';
 import {
   PERMISSIONS, permissionsForRole, permissionsForUser, setRolePermissions, setUserPermissions, userOverrides, clearPermissionCache,
 } from '../services/permissions.js';
@@ -22,10 +23,10 @@ router.get('/meta', (req, res) => {
     ).all(),
     positions: db.prepare('SELECT p.*, d.name AS department_name FROM positions p LEFT JOIN departments d ON d.id = p.department_id ORDER BY p.name').all(),
     locations: db.prepare('SELECT * FROM locations ORDER BY name').all(),
-    roles: db.prepare('SELECT id, key, name, description FROM roles ORDER BY id').all(),
+    roles: db.prepare('SELECT id, key, name, description, scope FROM roles ORDER BY id').all(),
     employees: req.can('employees.view') || req.can('shifts.view_all') || req.can('tasks.manage')
-      ? db.prepare(`SELECT id, first_name || ' ' || last_name AS name, status, avatar, department_id, position_id, location_id FROM employees
-          ${req.user.location_id ? 'WHERE location_id = ? OR location_id IS NULL OR id = ?' : ''} ORDER BY first_name`).all(...(req.user.location_id ? [req.user.location_id, req.user.employee_id || -1] : []))
+      ? db.prepare(`SELECT e.id, e.first_name || ' ' || e.last_name AS name, e.status, e.avatar, e.department_id, e.position_id, e.location_id FROM employees e
+          WHERE 1 ${scopeWhere(req.user.scope, { e: 'e' })} ORDER BY e.first_name`).all()
       // regular employees get a minimal colleague list (for shift-swap requests)
       : db.prepare("SELECT id, first_name || ' ' || last_name AS name FROM employees WHERE status = 'active' ORDER BY first_name").all(),
     settings: {
@@ -140,11 +141,12 @@ const onlyMainAdmin = (req) => { if (req.user.role !== 'admin') throw forbidden(
 const roleRow = (key) => getDb().prepare('SELECT * FROM roles WHERE key = ?').get(key);
 
 router.get('/permissions', requirePerm('users.manage'), (req, res) => {
-  const roles = getDb().prepare('SELECT r.key, r.name, r.description, (SELECT COUNT(*) FROM users u WHERE u.role_id = r.id) AS users FROM roles r ORDER BY r.id').all();
+  const roles = getDb().prepare('SELECT r.key, r.name, r.description, r.scope, (SELECT COUNT(*) FROM users u WHERE u.role_id = r.id) AS users FROM roles r ORDER BY r.id').all();
   res.json({
     catalog: Object.entries(PERMISSIONS).map(([key, label]) => ({ key, label })),
+    scopes: SCOPE_KEYS.map((key) => ({ key, label: SCOPES[key] })),
     can_edit: req.user.role === 'admin',
-    roles: roles.map((r) => ({ ...r, locked: r.key === 'admin', custom: !BUILT_IN_ROLES.includes(r.key), permissions: [...permissionsForRole(r.key)] })),
+    roles: roles.map((r) => ({ ...r, scope: r.key === 'admin' ? 'all' : r.scope, locked: r.key === 'admin', custom: !BUILT_IN_ROLES.includes(r.key), permissions: [...permissionsForRole(r.key)] })),
   });
 });
 
@@ -152,6 +154,7 @@ const roleSchema = z.object({
   name: zText(40),
   description: zOptText(200),
   permissions: z.array(z.enum(Object.keys(PERMISSIONS))).optional(),
+  scope: z.enum(SCOPE_KEYS).optional(), // who the permissions apply to
 });
 
 function checkRoleName(name, exceptKey = '') {
@@ -165,8 +168,9 @@ router.post('/roles', requirePerm('users.manage'), ah((req, res) => {
   const db = getDb();
   if (db.prepare('SELECT COUNT(*) c FROM roles').get().c >= 30) throw badRequest('אפשר להגדיר עד 30 תפקידים');
   const key = `custom_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
-  db.prepare('INSERT INTO roles (key, name, description) VALUES (?, ?, ?)').run(key, d.name, d.description);
+  db.prepare('INSERT INTO roles (key, name, description, scope) VALUES (?, ?, ?, ?)').run(key, d.name, d.description, d.scope || 'branch');
   setRolePermissions(key, d.permissions || []);
+  clearScopeCache();
   audit(req, { action: 'role.create', entityType: 'role', description: `${req.user.display_name} יצר/ה תפקיד חדש: ${d.name}`, newValue: { name: d.name, permissions: (d.permissions || []).map((p) => PERMISSIONS[p]) } });
   res.status(201).json({ key, message: `התפקיד "${d.name}" נוצר` });
 }));
@@ -178,12 +182,14 @@ router.put('/roles/:key', requirePerm('users.manage'), ah((req, res) => {
   const d = validate(roleSchema, req.body);
   checkRoleName(d.name, before.key);
   const oldPerms = [...permissionsForRole(before.key)];
-  getDb().prepare('UPDATE roles SET name = ?, description = ? WHERE key = ?').run(d.name, d.description, before.key);
+  getDb().prepare('UPDATE roles SET name = ?, description = ?, scope = ? WHERE key = ?')
+    .run(d.name, d.description, before.key === 'admin' ? 'all' : d.scope || before.scope, before.key);
+  clearScopeCache();
   if (d.permissions && before.key !== 'admin') setRolePermissions(before.key, d.permissions); // the main admin always has everything
   audit(req, {
     action: 'role.update', entityType: 'role', description: `${req.user.display_name} עדכן/ה את התפקיד ${d.name}`,
-    oldValue: { name: before.name, permissions: oldPerms.map((p) => PERMISSIONS[p]) },
-    newValue: { name: d.name, permissions: [...permissionsForRole(before.key)].map((p) => PERMISSIONS[p]) },
+    oldValue: { name: before.name, scope: SCOPES[before.scope], permissions: oldPerms.map((p) => PERMISSIONS[p]) },
+    newValue: { name: d.name, scope: SCOPES[before.key === 'admin' ? 'all' : d.scope || before.scope], permissions: [...permissionsForRole(before.key)].map((p) => PERMISSIONS[p]) },
   });
   res.json({ message: 'התפקיד עודכן' });
 }));
@@ -209,6 +215,7 @@ router.delete('/roles/:key', requirePerm('users.manage'), ah((req, res) => {
     db.prepare('DELETE FROM roles WHERE id = ?').run(role.id);
   })();
   clearPermissionCache();
+  clearScopeCache();
   audit(req, { action: 'role.delete', entityType: 'role', description: `${req.user.display_name} מחק/ה את התפקיד ${role.name}${target ? ` (${count} משתמשים הועברו ל"${target.name}")` : ''}` });
   res.json({ message: 'התפקיד נמחק' });
 }));
@@ -228,14 +235,26 @@ router.put('/permissions/:role', requirePerm('users.manage'), ah((req, res) => {
 
 // =========================== users ===========================
 const USER_COLUMNS = `u.id, u.username, u.email, u.display_name, u.employee_id, u.is_active, u.last_login_at, u.created_at,
-  u.location_id, ul.name AS location_name, u.totp_enabled, (SELECT COUNT(*) FROM webauthn_credentials w WHERE w.user_id = u.id) AS passkeys,
+  u.location_id, ul.name AS location_name, u.department_id, u.totp_enabled, r.scope AS role_scope,
+  (SELECT group_concat(x.location_id) FROM user_locations x WHERE x.user_id = u.id) AS location_ids, (SELECT COUNT(*) FROM webauthn_credentials w WHERE w.user_id = u.id) AS passkeys,
   r.key AS role, r.name AS role_name, e.first_name || ' ' || e.last_name AS employee_name`;
 const USER_JOINS = 'JOIN roles r ON r.id = u.role_id LEFT JOIN employees e ON e.id = u.employee_id LEFT JOIN locations ul ON ul.id = u.location_id';
 const getUser = (id) => getDb().prepare(`SELECT ${USER_COLUMNS} FROM users u ${USER_JOINS} WHERE u.id = ?`).get(id);
 
+/** Users a (delegated) user manager may see / manage: those whose employee card is in their scope, plus themself. */
+function userScope(req) {
+  const sc = req.user.scope;
+  if (sc.all) return '';
+  return `AND (u.id = ${Number(req.user.id)} OR (e.id IS NOT NULL ${scopeWhere(sc, { e: 'e', includeSelf: false })}))`;
+}
+const withScope = (u) => {
+  const scope = resolveScope({ id: u.id, role: u.role, employee_id: u.employee_id });
+  return { ...u, location_ids: u.location_ids ? String(u.location_ids).split(',').map(Number) : [], scope_label: describeScope(scope), scope_missing: scope.missing || null };
+};
+
 router.get('/users', requirePerm('users.manage'), (req, res) => {
-  const users = getDb().prepare(`SELECT ${USER_COLUMNS} FROM users u ${USER_JOINS} ORDER BY r.id, u.display_name`).all();
-  res.json({ users: users.map((u) => ({ ...u, custom_permissions: u.role === 'admin' ? 0 : Object.keys(userOverrides(u.id)).length })) });
+  const users = getDb().prepare(`SELECT ${USER_COLUMNS} FROM users u ${USER_JOINS} WHERE 1 ${userScope(req)} ORDER BY r.id, u.display_name`).all();
+  res.json({ users: users.map((u) => withScope({ ...u, custom_permissions: u.role === 'admin' ? 0 : Object.keys(userOverrides(u.id)).length })) });
 });
 
 // ---------- personal permissions ----------
@@ -255,6 +274,7 @@ router.put('/users/:id/permissions', requirePerm('users.manage'), ah((req, res) 
   const u = getUser(paramId(req.params.id));
   if (!u) throw notFound('המשתמש לא נמצא');
   if (u.role === 'admin') throw forbidden('למנהל ראשי יש תמיד את כל ההרשאות');
+  guardAdminTarget(req, u);
   if (req.user.role !== 'admin' && u.id === req.user.id) throw forbidden('לא ניתן לשנות את ההרשאות של עצמך');
   const { permissions } = validate(z.object({ permissions: z.array(z.enum(Object.keys(PERMISSIONS))) }), req.body);
   const before = [...permissionsForUser(u.id, u.role)];
@@ -275,7 +295,9 @@ const userSchema = z.object({
   display_name: zText(80),
   role: z.string().trim().min(1, 'יש לבחור תפקיד').max(40),
   employee_id: zOptId,
-  location_id: zOptId, // branch manager: sees and manages only this branch (empty = all branches)
+  location_id: zOptId,   // branch the user is responsible for (empty = taken from the employee card)
+  department_id: zOptId, // department the user is responsible for (empty = taken from the employee card)
+  location_ids: z.array(z.coerce.number().int().positive()).max(100).optional().default([]), // for roles responsible for several branches
   is_active: z.boolean().default(true),
 });
 
@@ -288,8 +310,31 @@ function roleIdFor(key) {
 /** Only a main admin may create, edit or manage main-admin accounts (protects against delegated users.manage). */
 function guardAdminTarget(req, target, newRole) {
   if (req.user.role === 'admin') return;
-  if (req.user.location_id && target && target.location_id !== req.user.location_id) throw forbidden('המשתמש שייך לסניף אחר');
   if (target?.role === 'admin' || newRole === 'admin') throw forbidden('רק מנהל ראשי יכול לנהל חשבונות של מנהלים ראשיים');
+  if (target && !getDb().prepare(`SELECT 1 FROM users u LEFT JOIN employees e ON e.id = u.employee_id WHERE u.id = ? ${userScope(req)}`).get(target.id)) {
+    throw forbidden('המשתמש לא באחריותך');
+  }
+}
+
+/** A delegated user manager can only hand out responsibility inside their own scope. */
+function fitResponsibility(req, data) {
+  const sc = req.user.scope;
+  if (data.role === 'admin') { data.location_id = null; data.department_id = null; data.location_ids = []; return; }
+  if (sc.all) return;
+  const okLoc = (l) => !sc.locs || sc.locs.includes(Number(l));
+  if (data.location_id && !okLoc(data.location_id)) throw forbidden('הסניף שנבחר לא באחריותך');
+  if (data.location_ids.some((l) => !okLoc(l))) throw forbidden('אחד הסניפים שנבחרו לא באחריותך');
+  if (sc.dep && data.department_id && Number(data.department_id) !== sc.dep) throw forbidden('המחלקה שנבחרה לא באחריותך');
+  if (sc.locs && !data.location_id && sc.locs.length === 1) data.location_id = sc.locs[0];
+  if (sc.dep && !data.department_id) data.department_id = sc.dep;
+}
+
+function saveUserLocations(userId, ids) {
+  const db = getDb();
+  const valid = new Set(db.prepare('SELECT id FROM locations').all().map((l) => l.id));
+  db.prepare('DELETE FROM user_locations WHERE user_id = ?').run(userId);
+  const ins = db.prepare('INSERT OR IGNORE INTO user_locations (user_id, location_id) VALUES (?, ?)');
+  for (const l of ids) if (valid.has(l)) ins.run(userId, l);
 }
 
 function checkUserUnique(data, exceptId = 0) {
@@ -309,12 +354,14 @@ router.post('/users', requirePerm('users.manage'), ah(async (req, res) => {
   const db = getDb();
   const roleId = roleIdFor(data.role);
   const hash = await bcrypt.hash(data.password, 12);
-  if (req.user.location_id) data.location_id = req.user.location_id; // a branch manager can only create users in their branch
-  const id = db.prepare('INSERT INTO users (username, email, display_name, password_hash, role_id, employee_id, is_active, location_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-    .run(data.username, data.email, data.display_name, hash, roleId, data.employee_id, data.is_active ? 1 : 0, data.role === 'admin' ? null : data.location_id).lastInsertRowid;
+  fitResponsibility(req, data);
+  if (data.employee_id && !req.user.scope.all && !employeeInScopeFn(req.user.scope, data.employee_id)) throw forbidden('העובד שנבחר לא באחריותך');
+  const id = db.prepare('INSERT INTO users (username, email, display_name, password_hash, role_id, employee_id, is_active, location_id, department_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(data.username, data.email, data.display_name, hash, roleId, data.employee_id, data.is_active ? 1 : 0, data.location_id, data.department_id).lastInsertRowid;
+  saveUserLocations(id, data.location_ids);
   const { password, ...logged } = data;
   audit(req, { action: 'user.create', entityType: 'user', entityId: id, description: `${req.user.display_name} יצר/ה משתמש ${data.display_name} (${data.role})`, newValue: logged });
-  res.status(201).json({ user: getUser(id), message: 'המשתמש נוצר בהצלחה' });
+  res.status(201).json({ user: withScope(getUser(id)), message: 'המשתמש נוצר בהצלחה' });
 }));
 
 router.put('/users/:id', requirePerm('users.manage'), ah((req, res) => {
@@ -327,10 +374,11 @@ router.put('/users/:id', requirePerm('users.manage'), ah((req, res) => {
   checkUserUnique(data, id);
   const db = getDb();
   const roleId = roleIdFor(data.role);
-  if (req.user.location_id) data.location_id = req.user.location_id;
-  if (data.role === 'admin') data.location_id = null; // a main admin always sees every branch
-  db.prepare("UPDATE users SET username=?, email=?, display_name=?, role_id=?, employee_id=?, is_active=?, location_id=?, updated_at=datetime('now') WHERE id=?")
-    .run(data.username, data.email, data.display_name, roleId, data.employee_id, data.is_active ? 1 : 0, data.location_id, id);
+  fitResponsibility(req, data);
+  if (data.employee_id && data.employee_id !== before.employee_id && !req.user.scope.all && !employeeInScopeFn(req.user.scope, data.employee_id)) throw forbidden('העובד שנבחר לא באחריותך');
+  db.prepare("UPDATE users SET username=?, email=?, display_name=?, role_id=?, employee_id=?, is_active=?, location_id=?, department_id=?, updated_at=datetime('now') WHERE id=?")
+    .run(data.username, data.email, data.display_name, roleId, data.employee_id, data.is_active ? 1 : 0, data.location_id, data.department_id, id);
+  saveUserLocations(id, data.location_ids);
   if (!data.is_active || before.role !== data.role) db.prepare('DELETE FROM sessions WHERE user_id = ?').run(id);
   const after = getUser(id);
   audit(req, {
@@ -338,10 +386,10 @@ router.put('/users/:id', requirePerm('users.manage'), ah((req, res) => {
     description: before.role !== data.role
       ? `${req.user.display_name} שינה/תה את ההרשאה של ${after.display_name} מ"${before.role_name}" ל"${after.role_name}"`
       : `${req.user.display_name} עדכן/ה את המשתמש ${after.display_name}`,
-    oldValue: { username: before.username, email: before.email, role: before.role, employee_id: before.employee_id, is_active: !!before.is_active, location_id: before.location_id },
-    newValue: { username: data.username, email: data.email, role: data.role, employee_id: data.employee_id, is_active: data.is_active, location_id: data.location_id },
+    oldValue: { username: before.username, email: before.email, role: before.role, employee_id: before.employee_id, is_active: !!before.is_active, location_id: before.location_id, department_id: before.department_id, location_ids: before.location_ids },
+    newValue: { username: data.username, email: data.email, role: data.role, employee_id: data.employee_id, is_active: data.is_active, location_id: data.location_id, department_id: data.department_id, location_ids: data.location_ids.join(',') || null },
   });
-  res.json({ user: after, message: 'המשתמש עודכן בהצלחה' });
+  res.json({ user: withScope(after), message: 'המשתמש עודכן בהצלחה' });
 }));
 
 router.post('/users/:id/password', requirePerm('users.manage'), ah(async (req, res) => {

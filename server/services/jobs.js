@@ -18,7 +18,7 @@ export function checkLateEmployees() {
   ).all(addMinutes(now, -grace - 1), now, `${addDays(todayLocal(), -1)}T00:00`);
   for (const s of late) {
     db.prepare('UPDATE shifts SET late_notified = 1 WHERE id = ?').run(s.id);
-    notifyPermission('attendance.manage', { type: 'employee_late', title: `${s.name} טרם הגיע/ה למשמרת`, body: `המשמרת התחילה ב-${hhmm(s.start_at)}`, link: '/attendance' });
+    notifyPermission('attendance.manage', { type: 'employee_late', title: `${s.name} טרם הגיע/ה למשמרת`, body: `המשמרת התחילה ב-${hhmm(s.start_at)}`, link: '/attendance' }, { about: { shiftId: s.id } });
     notifyEmployee(s.employee_id, { type: 'employee_late', title: 'לא נרשמה כניסה למשמרת', body: `המשמרת שלך התחילה ב-${hhmm(s.start_at)}. אל תשכח/י להחתים כניסה.`, link: '/attendance' });
     audit(null, { action: 'attendance.late_detected', entityType: 'shift', entityId: s.id, description: `${s.name} לא החתים/ה כניסה למשמרת שהתחילה ב-${hhmm(s.start_at)}` });
   }

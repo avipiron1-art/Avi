@@ -9,7 +9,9 @@ CREATE TABLE IF NOT EXISTS roles (
   id          INTEGER PRIMARY KEY,
   key         TEXT NOT NULL UNIQUE,              -- admin / shift_manager / employee, or custom_xxx for roles the business adds
   name        TEXT NOT NULL,
-  description TEXT
+  description TEXT,
+  -- Who the role's permissions apply to: all | branch | branches | department | department_all | lead | self
+  scope       TEXT NOT NULL DEFAULT 'branch'
 );
 
 -- Permissions granted to each role (admin implicitly has all permissions)
@@ -340,7 +342,8 @@ CREATE TABLE IF NOT EXISTS slot_overrides (
   shift_type_id    INTEGER NOT NULL REFERENCES shift_types(id) ON DELETE CASCADE,
   required_workers INTEGER NOT NULL CHECK (required_workers >= 0),
   required_leads   INTEGER NOT NULL CHECK (required_leads >= 0),
-  PRIMARY KEY (date, shift_type_id)
+  location_id      INTEGER NOT NULL DEFAULT 0,      -- branch (0 = every branch)
+  PRIMARY KEY (date, shift_type_id, location_id)
 );
 
 -- Shift swap board
@@ -389,4 +392,38 @@ CREATE TABLE IF NOT EXISTS webauthn_credentials (
   name          TEXT,
   last_used_at  TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- =====================================================================
+-- v4: responsibility scopes for a chain of branches
+-- =====================================================================
+-- Branches a manager is responsible for (roles with scope 'branches', e.g. an area manager)
+CREATE TABLE IF NOT EXISTS user_locations (
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, location_id)
+);
+-- Extra branches an employee also works in (besides employees.location_id)
+CREATE TABLE IF NOT EXISTS employee_locations (
+  employee_id INTEGER NOT NULL REFERENCES employees(id) ON DELETE CASCADE,
+  location_id INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  PRIMARY KEY (employee_id, location_id)
+);
+CREATE INDEX IF NOT EXISTS idx_employee_locations_loc ON employee_locations(location_id);
+-- Week planning state per branch (location_id 0 = business without branches)
+CREATE TABLE IF NOT EXISTS schedule_branch_weeks (
+  week_start   TEXT NOT NULL,
+  location_id  INTEGER NOT NULL DEFAULT 0,
+  status       TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','published')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  published_at TEXT,
+  published_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  PRIMARY KEY (week_start, location_id)
+);
+-- Shift types per branch: shift_types.location_id NULL = shared by the whole chain.
+-- A branch can hide a shared type (e.g. after making its own version with other hours).
+CREATE TABLE IF NOT EXISTS shift_type_hidden (
+  shift_type_id INTEGER NOT NULL REFERENCES shift_types(id) ON DELETE CASCADE,
+  location_id   INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  PRIMARY KEY (shift_type_id, location_id)
 );

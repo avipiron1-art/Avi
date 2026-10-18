@@ -13,11 +13,11 @@ import InviteModal from '../components/InviteModal.jsx';
 import { EMPLOYEE_STATUS, fullDate, money } from '../lib/format.js';
 
 export default function Employees() {
-  const { meta, can } = useAuth();
+  const { meta, can, user } = useAuth();
   const toast = useToast();
   const navigate = useNavigate();
   const [search, setSearch] = useState('');
-  const [filters, setFilters] = useState({ department_id: '', position_id: '', status: '' });
+  const [filters, setFilters] = useState({ department_id: '', position_id: '', status: '', location_id: '' });
   const [sort, setSort] = useState({ field: 'name', dir: 'asc' });
   const [form, setForm] = useState(null); // null | {} (new) | employee
   const [inviting, setInviting] = useState(false);
@@ -30,7 +30,8 @@ export default function Employees() {
 
   const onSort = (field) => setSort((s) => ({ field, dir: s.field === field && s.dir === 'asc' ? 'desc' : 'asc' }));
   const setF = (k) => (e) => setFilters((f) => ({ ...f, [k]: e.target.value }));
-  const hasFilters = q || filters.department_id || filters.position_id || filters.status;
+  const hasFilters = q || filters.department_id || filters.position_id || filters.status || filters.location_id;
+  const branchOptions = user?.scope && !user.scope.all ? user.scope.branches : meta.locations;
 
   const toggleStatus = (e) => {
     const next = e.status === 'inactive' ? 'active' : 'inactive';
@@ -85,10 +86,11 @@ export default function Employees() {
 
       <div className="toolbar">
         <div className="input-icon"><Search size={17} /><Input placeholder="חיפוש לפי שם, מזהה, טלפון או אימייל" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="חיפוש עובד" /></div>
+        {branchOptions.length > 1 && <Select value={filters.location_id} onChange={setF('location_id')} aria-label="סניף"><option value="">כל הסניפים</option>{branchOptions.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select>}
         <Select value={filters.department_id} onChange={setF('department_id')} aria-label="מחלקה"><option value="">כל המחלקות</option>{meta.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>
         <Select value={filters.position_id} onChange={setF('position_id')} aria-label="תפקיד"><option value="">כל התפקידים</option>{meta.positions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select>
         <Select value={filters.status} onChange={setF('status')} aria-label="סטטוס"><option value="">כל הסטטוסים</option>{Object.entries(EMPLOYEE_STATUS).map(([k, s]) => <option key={k} value={k}>{s.label}</option>)}</Select>
-        {hasFilters && <Button variant="ghost" onClick={() => { setSearch(''); setFilters({ department_id: '', position_id: '', status: '' }); }}>ניקוי</Button>}
+        {hasFilters && <Button variant="ghost" onClick={() => { setSearch(''); setFilters({ department_id: '', position_id: '', status: '', location_id: '' }); }}>ניקוי</Button>}
       </div>
 
       <Card pad={false}>

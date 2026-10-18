@@ -5,6 +5,7 @@ import {
   validate, z, zText, zOptText, zDate, zEmail, zPhone, zAvatar, zOptId, paramId,
 } from '../lib/validate.js';
 import { requirePerm } from '../middleware/auth.js';
+import { employeeInScope, scopeWhere } from '../services/scope.js';
 import { EMPLOYEE_COLUMNS, EMPLOYEE_JOINS, SHIFT_COLUMNS, SHIFT_JOINS, scrubEmployee } from '../lib/serialize.js';
 import { computeAttendance } from '../lib/attendance.js';
 import { nowLocal, monthRange, todayLocal, addDays } from '../lib/time.js';
@@ -34,11 +35,52 @@ const employeeSchema = z.object({
     .transform((v) => (v === '' || v == null ? null : v)),
   can_lead: z.boolean().optional().default(false).transform((b) => (b ? 1 : 0)),
   national_id: z.union([z.string().trim().regex(/^\d{5,9}$/, 'מספר זהות לא תקין'), z.literal(''), z.null()]).optional().transform((v) => v || null),
+  extra_location_ids: z.array(z.coerce.number().int().positive()).max(50).optional(), // other branches the employee also works in
 });
+
+/**
+ * A manager may only create / keep employees inside their own scope:
+ * missing branch / department are filled from the scope, and anything outside it is refused.
+ */
+function fitToScope(req, data) {
+  const sc = req.user.scope;
+  if (sc.all) return;
+  if (sc.locs) {
+    if (!data.location_id && sc.locs.length === 1) data.location_id = sc.locs[0];
+    if (!sc.locs.includes(Number(data.location_id))) throw forbidden('אפשר לשייך עובדים רק לסניף שבאחריותך', { fields: { location_id: 'סניף מחוץ לאחריותך' } });
+  }
+  if (sc.dep) {
+    if (!data.department_id) data.department_id = sc.dep;
+    if (Number(data.department_id) !== sc.dep) throw forbidden('אפשר לשייך עובדים רק למחלקה שבאחריותך', { fields: { department_id: 'מחלקה מחוץ לאחריותך' } });
+  }
+  if (sc.selfOnly || sc.window) throw forbidden('אין לך הרשאה לנהל עובדים');
+}
+
+/** Save extra branches; branches outside the manager's scope are left as they were. */
+function saveExtraLocations(req, employeeId, wanted) {
+  if (!wanted) return;
+  const db = getDb();
+  const sc = req.user.scope;
+  const mine = (loc) => sc.all || !sc.locs || sc.locs.includes(loc);
+  const current = db.prepare('SELECT location_id FROM employee_locations WHERE employee_id = ?').all(employeeId).map((r) => r.location_id);
+  const home = db.prepare('SELECT location_id FROM employees WHERE id = ?').get(employeeId)?.location_id;
+  const next = new Set([...current.filter((l) => !mine(l)), ...wanted.filter((l) => mine(l) && l !== home)]);
+  const valid = new Set(db.prepare('SELECT id FROM locations').all().map((l) => l.id));
+  db.transaction(() => {
+    db.prepare('DELETE FROM employee_locations WHERE employee_id = ?').run(employeeId);
+    const ins = db.prepare('INSERT INTO employee_locations (employee_id, location_id) VALUES (?, ?)');
+    for (const l of next) if (valid.has(l)) ins.run(employeeId, l);
+  })();
+}
+
+/** Managing actions on an existing employee need them to be inside the manager's scope. */
+function assertManages(req, id) {
+  if (!employeeInScope(req.user.scope, id, { includeSelf: false }) && !(req.user.scope.all)) throw forbidden('העובד לא באחריותך');
+}
 
 /** Can the current user view this employee's profile? */
 function canViewEmployee(req, id) {
-  return req.can('employees.view') || req.user.employee_id === id;
+  return req.user.employee_id === id || (req.can('employees.view') && employeeInScope(req.user.scope, id));
 }
 
 function getEmployee(id) {
@@ -57,7 +99,7 @@ function uniqueCheck(data, exceptId = 0) {
 
 // ---------- list ----------
 router.get('/', requirePerm('employees.view'), (req, res) => {
-  const { search = '', department_id, position_id, status, sort = 'name', dir = 'asc' } = req.query;
+  const { search = '', department_id, position_id, location_id, status, sort = 'name', dir = 'asc' } = req.query;
   const where = [];
   const params = {};
   if (search) {
@@ -67,7 +109,9 @@ router.get('/', requirePerm('employees.view'), (req, res) => {
   if (department_id) { where.push('e.department_id = @department_id'); params.department_id = Number(department_id); }
   if (position_id) { where.push('e.position_id = @position_id'); params.position_id = Number(position_id); }
   if (status && STATUS_LABEL[status]) { where.push('e.status = @status'); params.status = status; }
-  if (req.user.location_id) { where.push('e.location_id = @scope_loc'); params.scope_loc = req.user.location_id; } // branch manager
+  if (location_id) { where.push('(e.location_id = @loc OR EXISTS (SELECT 1 FROM employee_locations x WHERE x.employee_id = e.id AND x.location_id = @loc))'); params.loc = Number(location_id); }
+  const scope = scopeWhere(req.user.scope, { e: 'e' }); // only the people this manager is responsible for
+  if (scope) where.push(scope.replace(/^ AND /, ''));
   let orderCol = SORTABLE[sort] || SORTABLE.name;
   if (sort === 'wage' && !req.can('employees.wage')) orderCol = SORTABLE.name;
   const orderDir = dir === 'desc' ? 'DESC' : 'ASC';
@@ -143,11 +187,13 @@ router.get('/:id', ah((req, res) => {
 router.post('/', requirePerm('employees.manage'), ah((req, res) => {
   const data = validate(employeeSchema, req.body);
   if (!req.can('employees.wage')) data.hourly_wage = null;
+  fitToScope(req, data);
   uniqueCheck(data);
   const info = getDb().prepare(
     `INSERT INTO employees (employee_code, first_name, last_name, phone, email, avatar, position_id, department_id, location_id, start_date, status, hourly_wage, can_lead, national_id)
      VALUES (@employee_code, @first_name, @last_name, @phone, @email, @avatar, @position_id, @department_id, @location_id, @start_date, @status, @hourly_wage, @can_lead, @national_id)`,
-  ).run({ avatar: null, ...data });
+  ).run({ avatar: null, ...data, extra_location_ids: undefined });
+  saveExtraLocations(req, info.lastInsertRowid, data.extra_location_ids);
   const emp = getEmployee(info.lastInsertRowid);
   const { avatar, ...logged } = data;
   audit(req, { action: 'employee.create', entityType: 'employee', entityId: emp.id, description: `${req.user.display_name} הוסיף/ה את העובד ${emp.full_name}`, newValue: logged });
@@ -159,7 +205,9 @@ router.put('/:id', requirePerm('employees.manage'), ah((req, res) => {
   const id = paramId(req.params.id);
   const before = getEmployee(id);
   if (!before) throw notFound('העובד לא נמצא');
+  assertManages(req, id);
   const data = validate(employeeSchema, req.body);
+  fitToScope(req, data);
   if (!req.can('employees.wage')) data.hourly_wage = before.hourly_wage;
   if (data.avatar === undefined) data.avatar = before.avatar;
   uniqueCheck(data, id);
@@ -167,7 +215,8 @@ router.put('/:id', requirePerm('employees.manage'), ah((req, res) => {
     `UPDATE employees SET employee_code=@employee_code, first_name=@first_name, last_name=@last_name, phone=@phone, email=@email,
      avatar=@avatar, position_id=@position_id, department_id=@department_id, location_id=@location_id, start_date=@start_date,
      status=@status, hourly_wage=@hourly_wage, can_lead=@can_lead, national_id=@national_id, updated_at=datetime('now') WHERE id=@id`,
-  ).run({ ...data, id });
+  ).run({ ...data, extra_location_ids: undefined, id });
+  saveExtraLocations(req, id, data.extra_location_ids);
   const after = getEmployee(id);
   const d = diff(before, data, ['employee_code', 'first_name', 'last_name', 'phone', 'email', 'position_id', 'department_id', 'location_id', 'start_date', 'status', 'hourly_wage', 'can_lead', 'national_id']);
   if (d || before.avatar !== data.avatar) {
@@ -182,6 +231,7 @@ router.patch('/:id/status', requirePerm('employees.manage'), ah((req, res) => {
   const { status } = validate(z.object({ status: z.enum(['active', 'inactive', 'vacation']) }), req.body);
   const before = getEmployee(id);
   if (!before) throw notFound('העובד לא נמצא');
+  assertManages(req, id);
   const db = getDb();
   db.prepare("UPDATE employees SET status = ?, updated_at = datetime('now') WHERE id = ?").run(status, id);
   // An inactive employee cannot log in
@@ -201,6 +251,7 @@ router.delete('/:id', requirePerm('employees.delete'), ah((req, res) => {
   const before = getEmployee(id);
   if (!before) throw notFound('העובד לא נמצא');
   if (req.user.employee_id === id) throw forbidden('לא ניתן למחוק את כרטיס העובד של המשתמש המחובר');
+  assertManages(req, id);
   const { avatar, ...snapshot } = before;
   getDb().prepare('DELETE FROM employees WHERE id = ?').run(id);
   audit(req, { action: 'employee.delete', entityType: 'employee', entityId: id, description: `${req.user.display_name} מחק/ה את העובד ${before.full_name}`, oldValue: snapshot });
@@ -212,6 +263,7 @@ router.post('/:id/notes', requirePerm('employees.notes', 'employees.manage'), ah
   const id = paramId(req.params.id);
   const emp = getEmployee(id);
   if (!emp) throw notFound('העובד לא נמצא');
+  assertManages(req, id);
   const { content } = validate(z.object({ content: zText(2000) }), req.body);
   const info = getDb().prepare('INSERT INTO employee_notes (employee_id, author_id, content) VALUES (?, ?, ?)').run(id, req.user.id, content);
   audit(req, { action: 'employee.note', entityType: 'employee', entityId: id, description: `${req.user.display_name} הוסיף/ה הערה לעובד ${emp.full_name}`, newValue: { content } });

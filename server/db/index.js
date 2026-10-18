@@ -60,6 +60,42 @@ function migrate(d) {
     if (sm) d.prepare("INSERT OR IGNORE INTO role_permissions (role_id, permission) VALUES (?, 'announcements.manage')").run(sm.id);
     d.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('perm_v3', '1')").run();
   }
+  // v4: responsibility scopes + per-branch scheduling
+  if (!hasColumn(d, 'roles', 'scope')) {
+    d.exec("ALTER TABLE roles ADD COLUMN scope TEXT NOT NULL DEFAULT 'branch'");
+    d.exec("UPDATE roles SET scope = 'all' WHERE key = 'admin'; UPDATE roles SET scope = 'self' WHERE key = 'employee';");
+  }
+  add('shift_types', 'location_id', 'INTEGER REFERENCES locations(id) ON DELETE CASCADE'); // NULL = shared by every branch
+  add('users', 'department_id', 'INTEGER REFERENCES departments(id) ON DELETE SET NULL'); // department a manager is responsible for
+  if (!hasColumn(d, 'schedule_assignments', 'location_id')) {
+    d.exec('ALTER TABLE schedule_assignments ADD COLUMN location_id INTEGER NOT NULL DEFAULT 0');
+    d.exec('UPDATE schedule_assignments SET location_id = COALESCE((SELECT location_id FROM employees e WHERE e.id = schedule_assignments.employee_id), 0)');
+  }
+  d.exec('CREATE INDEX IF NOT EXISTS idx_assign_loc ON schedule_assignments(location_id, date)');
+  if (!hasColumn(d, 'slot_overrides', 'location_id')) {
+    d.transaction(() => {
+      d.exec(`CREATE TABLE slot_overrides_new (date TEXT NOT NULL, shift_type_id INTEGER NOT NULL REFERENCES shift_types(id) ON DELETE CASCADE,
+          required_workers INTEGER NOT NULL CHECK (required_workers >= 0), required_leads INTEGER NOT NULL CHECK (required_leads >= 0),
+          location_id INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (date, shift_type_id, location_id));
+        INSERT INTO slot_overrides_new (date, shift_type_id, required_workers, required_leads) SELECT date, shift_type_id, required_workers, required_leads FROM slot_overrides;
+        DROP TABLE slot_overrides;
+        ALTER TABLE slot_overrides_new RENAME TO slot_overrides;`);
+    })();
+  }
+  // The automatic "shift lead on duty" rights become a regular role whose permissions apply only during their lead shifts
+  if (!d.prepare("SELECT 1 FROM settings WHERE key = 'scope_v1'").get()) {
+    d.transaction(() => {
+      const emp = d.prepare("SELECT id FROM roles WHERE key = 'employee'").get();
+      if (emp && !d.prepare("SELECT 1 FROM roles WHERE key = 'shift_lead'").get()) {
+        const name = d.prepare("SELECT 1 FROM roles WHERE name = 'אחמ\"ש'").get() ? 'אחמ"ש במשמרת' : 'אחמ"ש';
+        const id = d.prepare("INSERT INTO roles (key, name, description, scope) VALUES ('shift_lead', ?, 'הרשאות שפועלות רק במשמרות שבהן הוא משובץ כאחמ\"ש', 'lead')").run(name).lastInsertRowid;
+        const ins = d.prepare('INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)');
+        ins.run(id, 'attendance.manage'); ins.run(id, 'incidents.report');
+        d.prepare('UPDATE users SET role_id = ? WHERE role_id = ? AND employee_id IN (SELECT id FROM employees WHERE can_lead = 1)').run(id, emp.id);
+      }
+      d.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('scope_v1', '1')").run();
+    })();
+  }
   // Default shift templates so the scheduling screen works out of the box
   if (!d.prepare('SELECT 1 FROM shift_types LIMIT 1').get()) {
     const ins = d.prepare('INSERT INTO shift_types (name, start_time, end_time, sort_order) VALUES (?, ?, ?, ?)');

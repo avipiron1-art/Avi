@@ -4,7 +4,7 @@ import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 import { getDb } from '../db/index.js';
 import { config } from '../config.js';
-import { ah, badRequest, conflict, notFound } from '../lib/errors.js';
+import { ah, badRequest, conflict, forbidden, notFound } from '../lib/errors.js';
 import { validate, z, zText, zOptId, zEmail, zPhone, zPassword, paramId } from '../lib/validate.js';
 import { requirePerm, startSession, hashToken, newToken } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
@@ -15,13 +15,21 @@ import { renderEmail, sendMail } from '../services/mailer.js';
 // ---------- manager side (mounted under the authenticated API) ----------
 export const invitesRouter = Router();
 
+/** Links a manager sees / may revoke: their own, or for a branch / department in their scope. */
+function inviteScope(req) {
+  const sc = req.user.scope;
+  if (sc.all) return '';
+  const conds = [sc.locs ? `i.location_id IN (${sc.locs.map(Number).join(',') || -1})` : '1', sc.dep ? `i.department_id = ${Number(sc.dep)}` : '1'];
+  return `WHERE (i.created_by = ${Number(req.user.id)} OR (${conds.join(' AND ')}))`;
+}
+
 invitesRouter.get('/', requirePerm('employees.manage'), (req, res) => {
   const invites = getDb().prepare(
     `SELECT i.id, i.label, i.max_uses, i.uses, i.expires_at, i.revoked, i.created_at, u.display_name AS created_by_name,
             d.name AS department_name, p.name AS position_name, l.name AS location_name
      FROM invites i LEFT JOIN users u ON u.id = i.created_by LEFT JOIN departments d ON d.id = i.department_id
      LEFT JOIN positions p ON p.id = i.position_id LEFT JOIN locations l ON l.id = i.location_id
-     ORDER BY i.id DESC LIMIT 50`,
+     ${inviteScope(req)} ORDER BY i.id DESC LIMIT 50`,
   ).all().map((i) => ({ ...i, active: !i.revoked && i.uses < i.max_uses && i.expires_at > new Date().toISOString() }));
   res.json({ invites });
 });
@@ -35,13 +43,21 @@ invitesRouter.post('/', requirePerm('employees.manage'), ah((req, res) => {
     send_to: z.array(z.string().trim().toLowerCase().email('כתובת מייל לא תקינה')).max(20).optional().default([]), // email the link
   }), req.body);
   if (d.send_to.length > d.max_uses) d.max_uses = Math.min(200, d.send_to.length);
-  if (req.user.location_id && d.location_id && d.location_id !== req.user.location_id) throw badRequest('ניתן להזמין עובדים רק לסניף שלך');
+  const sc = req.user.scope;
+  if (!sc.all) {
+    if (sc.selfOnly || sc.window) throw forbidden('אין לך הרשאה להזמין עובדים');
+    if (sc.locs) {
+      if (!d.location_id && sc.locs.length === 1) d.location_id = sc.locs[0];
+      if (!sc.locs.includes(Number(d.location_id))) throw badRequest('יש לבחור סניף שבאחריותך', { fields: { location_id: 'סניף מחוץ לאחריותך' } });
+    }
+    if (sc.dep) d.department_id = sc.dep; // a department manager invites into their department
+  }
   const token = newToken();
   const expires = new Date(Date.now() + d.expires_days * 86400000).toISOString();
   const id = getDb().prepare(
     `INSERT INTO invites (token_hash, label, created_by, department_id, position_id, location_id, max_uses, expires_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(hashToken(token), d.label || null, req.user.id, d.department_id, d.position_id, d.location_id || req.user.location_id || null, d.max_uses, expires).lastInsertRowid;
+  ).run(hashToken(token), d.label || null, req.user.id, d.department_id, d.position_id, d.location_id || null, d.max_uses, expires).lastInsertRowid;
   audit(req, { action: 'invite.create', entityType: 'invite', entityId: id, description: `${req.user.display_name} יצר/ה קישור הצטרפות לעובדים${d.label ? ` (${d.label})` : ''}`, newValue: { ...d, expires_at: expires } });
   const link = `${config.appUrl}/join/${token}`;
   if (d.send_to.length) {
@@ -61,7 +77,8 @@ invitesRouter.post('/', requirePerm('employees.manage'), ah((req, res) => {
 
 invitesRouter.delete('/:id', requirePerm('employees.manage'), ah((req, res) => {
   const id = paramId(req.params.id);
-  const r = getDb().prepare('UPDATE invites SET revoked = 1 WHERE id = ?').run(id);
+  const where = inviteScope(req).replace(/^WHERE/, 'AND');
+  const r = getDb().prepare(`UPDATE invites SET revoked = 1 WHERE id = ? ${where.replace(/\bi\./g, 'invites.')}`).run(id);
   if (!r.changes) throw notFound('הקישור לא נמצא');
   audit(req, { action: 'invite.revoke', entityType: 'invite', entityId: id, description: `${req.user.display_name} ביטל/ה קישור הצטרפות` });
   res.json({ ok: true, message: 'הקישור בוטל' });
@@ -130,7 +147,7 @@ joinRouter.post('/:token', joinLimiter, ah(async (req, res) => {
   notifyPermission('employees.manage', {
     type: 'employee_joined', title: `עובד/ת חדש/ה הצטרף/ה: ${name}`,
     body: `שם משתמש: ${d.username} · טלפון: ${d.phone} · ${d.email}`, link: `/employees/${employeeId}`,
-  });
+  }, { about: { employeeId } }); // only managers responsible for the new employee's branch / department
   const welcome = renderEmail({
     title: `ברוכים הבאים, ${d.first_name}!`,
     lines: [`נרשמת בהצלחה למערכת של ${getSetting('business_name') || 'Shiftly'}.`, `שם המשתמש שלך: ${d.username}`, 'מומלץ להתקין את האפליקציה בטלפון ולהפעיל התראות כדי לא לפספס משמרות.'],

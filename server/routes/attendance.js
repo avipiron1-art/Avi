@@ -3,6 +3,7 @@ import { getDb } from '../db/index.js';
 import { ah, badRequest, forbidden, notFound } from '../lib/errors.js';
 import { validate, z, zMonth, zDate, zDateTime, zOptText, zOptId, paramId, zText } from '../lib/validate.js';
 import { requirePerm, requireEmployee, scopeSql } from '../middleware/auth.js';
+import { scopeWhere, shiftInScope } from '../services/scope.js';
 import { SHIFT_COLUMNS, SHIFT_JOINS } from '../lib/serialize.js';
 import { computeAttendance } from '../lib/attendance.js';
 import { addDays, addMinutes, nowLocal, todayLocal, hhmm } from '../lib/time.js';
@@ -72,11 +73,10 @@ router.get('/', requirePerm('attendance.manage'), ah((req, res) => {
   const params = { from: `${date}T00:00`, to: `${addDays(date, 1)}T00:00` };
   let extra = '';
   if (q.department_id) { extra = 'AND e.department_id = @dep'; params.dep = q.department_id; }
-  const scope = scopeSql(req);
   const rows = withAttendance(getDb().prepare(
     `SELECT ${SHIFT_COLUMNS} FROM shifts s ${SHIFT_JOINS}
-     WHERE s.status = 'scheduled' AND s.start_at >= @from AND s.start_at < @to ${extra} ${scope.sql} ORDER BY s.start_at, e.first_name`,
-  ).all({ ...params, ...scope.params }));
+     WHERE s.status = 'scheduled' AND s.start_at >= @from AND s.start_at < @to ${extra} ${scopeSql(req, { s: 's', includeSelf: false })} ORDER BY s.start_at, e.first_name`,
+  ).all(params));
   res.json({ date, rows, summary: summarize(rows), lead_scope: req.user.lead_scope || null });
 }));
 
@@ -123,10 +123,8 @@ router.get('/me', requireEmployee, (req, res) => {
 
 /** Branch managers and on-duty shift leads may only touch shifts inside their scope. */
 function assertInScope(req, shiftId) {
-  const scope = scopeSql(req);
-  if (!scope.sql) return;
-  const ok = getDb().prepare(`SELECT 1 FROM shifts s JOIN employees e ON e.id = s.employee_id WHERE s.id = @id ${scope.sql}`).get({ id: shiftId, ...scope.params });
-  if (!ok) throw forbidden(req.user.lead_scope ? 'כאחמ״ש אפשר לעדכן רק את המשמרת שלך' : 'המשמרת שייכת לסניף אחר');
+  if (shiftInScope(req.user.scope, shiftId, { includeSelf: false })) return;
+  throw forbidden(req.user.lead_scope ? 'כאחמ״ש אפשר לעדכן רק את המשמרת שלך' : 'המשמרת לא באחריותך');
 }
 
 function upsertAttendance(shiftId, fields, userId) {
@@ -158,7 +156,7 @@ router.post('/clock-in', requireEmployee, ah((req, res) => {
   const full = withAttendance([getShift(shift.id)], now)[0];
   audit(req, { action: 'attendance.clock_in', entityType: 'shift', entityId: shift.id, description: `${full.employee_name} נכנס/ה למשמרת ב-${hhmm(now)}${full.late_minutes ? ` (איחור של ${full.late_minutes} דק׳)` : ''}`, newValue: { clock_in_at: now } });
   if (full.late_minutes > 0) {
-    notifyPermission('attendance.manage', { type: 'employee_late', title: `${full.employee_name} איחר/ה למשמרת`, body: `נכנס/ה ב-${hhmm(now)} במקום ${hhmm(full.start_at)} (${full.late_minutes} דק׳)`, link: '/attendance' });
+    notifyPermission('attendance.manage', { type: 'employee_late', title: `${full.employee_name} איחר/ה למשמרת`, body: `נכנס/ה ב-${hhmm(now)} במקום ${hhmm(full.start_at)} (${full.late_minutes} דק׳)`, link: '/attendance' }, { about: { shiftId: shift.id } });
   }
   res.json({ shift: full, message: full.late_minutes ? `נרשמה כניסה למשמרת (איחור של ${full.late_minutes} דקות)` : 'נרשמה כניסה למשמרת. משמרת טובה!' });
 }));
@@ -205,9 +203,13 @@ router.put('/:shiftId', requirePerm('attendance.manage'), ah((req, res) => {
 
 // ---------- incidents ----------
 router.get('/incidents/list', requirePerm('incidents.report', 'attendance.manage'), (req, res) => {
+  // incidents about people in my scope (by the shift's employee, else by the reporter), plus my own reports
+  const scope = req.user.scope;
+  const where = scope.all ? '' : `WHERE (i.reported_by = ${Number(req.user.id)} OR (e.id IS NOT NULL ${scopeWhere(scope, { e: 'e', includeSelf: false })}))`;
   const rows = getDb().prepare(
     `SELECT i.*, u.display_name AS reported_by_name FROM incidents i LEFT JOIN users u ON u.id = i.reported_by
-     ORDER BY i.occurred_at DESC LIMIT 100`,
+     LEFT JOIN shifts s ON s.id = i.shift_id LEFT JOIN employees e ON e.id = COALESCE(s.employee_id, u.employee_id)
+     ${where} ORDER BY i.occurred_at DESC LIMIT 100`,
   ).all();
   res.json({ incidents: rows });
 });
@@ -217,11 +219,12 @@ router.post('/incidents', requirePerm('incidents.report'), ah((req, res) => {
     title: zText(120), description: zOptText(2000), severity: z.enum(['low', 'medium', 'high']).default('medium'),
     shift_id: zOptId, occurred_at: zDateTime.optional(),
   }), req.body);
+  if (data.shift_id && !shiftInScope(req.user.scope, data.shift_id)) throw forbidden('המשמרת לא באחריותך');
   const occurred = data.occurred_at || nowLocal();
   const id = getDb().prepare('INSERT INTO incidents (shift_id, reported_by, title, description, severity, occurred_at) VALUES (?, ?, ?, ?, ?, ?)')
     .run(data.shift_id, req.user.id, data.title, data.description, data.severity, occurred).lastInsertRowid;
   audit(req, { action: 'incident.create', entityType: 'incident', entityId: id, description: `${req.user.display_name} דיווח/ה על אירוע: ${data.title}`, newValue: data });
-  if (data.severity === 'high') notifyPermission('settings.manage', { type: 'incident', title: 'דווח אירוע בחומרה גבוהה', body: data.title, link: '/attendance' }, { exceptUserId: req.user.id });
+  if (data.severity === 'high') notifyPermission('settings.manage', { type: 'incident', title: 'דווח אירוע בחומרה גבוהה', body: data.title, link: '/attendance' }, { exceptUserId: req.user.id, about: data.shift_id ? { shiftId: data.shift_id } : { employeeId: req.user.employee_id } });
   res.status(201).json({ id, message: 'האירוע דווח בהצלחה' });
 }));
 
