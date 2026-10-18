@@ -284,6 +284,11 @@ export function seed(db = getDb(), { demo = true, adminPassword = DEMO_PASSWORDS
       }
     }
 
+    // submission for next week is open for everyone (a manager opens it; here: until Saturday evening)
+    const closes = `${addDays(nextWeek, -1)}T20:00`;
+    db.prepare('INSERT INTO schedule_submission_windows (week_start, location_id, department_id, closes_at, reminder_minutes, opened_by) VALUES (?, 0, 0, ?, 180, ?)')
+      .run(nextWeek, closes > nowLocal() ? closes : null, adminId);
+
     // ---------- notifications ----------
     const insN = db.prepare('INSERT INTO notifications (user_id, type, title, body, link, is_read, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)');
     const ts = (daysAgo, h) => `${addDays(today, -daysAgo)} ${String(h).padStart(2, '0')}:15:00`;

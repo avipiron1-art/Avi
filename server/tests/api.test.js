@@ -330,6 +330,11 @@ test('employees submit preferences, manager assigns with a shift lead and publis
   assert.equal(my.week_start, ws);
   const [morning, evening] = my.types;
   assert.ok(morning && evening);
+  // submission is closed until a manager opens it
+  assert.equal(my.locked, true);
+  assert.equal((await yossi.put('/schedule/my', { week_start: ws, prefs: [] })).status, 400);
+  const opener = await login('admin', 'Admin1234');
+  assert.equal((await opener.post('/schedule/windows', { week_start: ws, location_id: 0, department_id: 0 })).status, 201);
   const sub = await yossi.put('/schedule/my', { week_start: ws, note: 'לא בימי שישי', prefs: [
     { date: ws, shift_type_id: morning.id, preference: 'preferred' },
     { date: ws, shift_type_id: evening.id, preference: 'unavailable' },
@@ -1012,4 +1017,75 @@ test('the shift manager role can be deleted (its people move to another role); m
   for (const id of smUsers) assert.equal(db.prepare('SELECT r.key FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?').get(id).key, 'employee');
   assert.equal((await admin.put('/roles/admin', { name: 'בעל הרשת' })).status, 200, 'main admin can be renamed');
   assert.equal(db.prepare("SELECT name FROM roles WHERE key = 'admin'").get().name, 'בעל הרשת');
+});
+
+test('availability submission: closed until a manager opens it, only for their branch / department, reminder before closing', async () => {
+  const { nowLocal, addMinutes, addDays } = await import('../lib/time.js');
+  const { checkSubmissionReminders } = await import('../services/submission.js');
+  const db = getDb();
+  const ws = addDays(nextSunday(), 14);
+  const admin = await login('admin', 'Admin1234');
+  const yId = db.prepare("SELECT employee_id FROM users WHERE username = 'yossi'").get().employee_id;
+  const yEmp = db.prepare('SELECT location_id, department_id FROM employees WHERE id = ?').get(yId);
+  const otherLoc = db.prepare('SELECT id FROM locations WHERE id != ? ORDER BY id LIMIT 1').get(yEmp.location_id).id;
+  const otherDep = db.prepare('SELECT id FROM departments WHERE id != ? ORDER BY id LIMIT 1').get(yEmp.department_id).id;
+  const hash = db.prepare("SELECT password_hash FROM users WHERE username = 'yossi'").get().password_hash;
+  const role = await admin.post('/roles', { name: 'מנהל סניף להגשה', scope: 'branch', permissions: ['employees.view', 'schedule.manage'] });
+  assert.equal(role.status, 201);
+  const shiftMgr = db.prepare('SELECT id FROM roles WHERE key = ?').get(role.body.key).id;
+  db.prepare('INSERT INTO users (username, email, display_name, password_hash, role_id, location_id) VALUES (?, ?, ?, ?, ?, ?)')
+    .run('win.mgr', 'win.mgr@x.io', 'מנהל סניף', hash, shiftMgr, otherLoc);
+  const mgr = await login('win.mgr', 'Employee1234');
+  const yossi = await login('yossi', 'Employee1234');
+  const send = () => yossi.put('/schedule/my', { week_start: ws, prefs: [] });
+
+  // closed by default
+  assert.equal((await yossi.get(`/schedule/my?week=${ws}`)).body.window.open, false);
+  assert.equal((await send()).status, 400);
+
+  // a branch manager can't open another branch, or every branch
+  assert.equal((await mgr.post('/schedule/windows', { week_start: ws, location_id: yEmp.location_id, department_id: 0 })).status, 403);
+  assert.equal((await mgr.post('/schedule/windows', { week_start: ws, location_id: 0, department_id: 0 })).status, 403);
+  // their own branch is fine – it doesn't open yossi's branch
+  assert.equal((await mgr.post('/schedule/windows', { week_start: ws, location_id: otherLoc, department_id: 0 })).status, 201);
+  assert.equal((await send()).status, 400);
+
+  // opening another department in yossi's branch doesn't cover him either
+  assert.equal((await admin.post('/schedule/windows', { week_start: ws, location_id: yEmp.location_id, department_id: otherDep })).status, 201);
+  assert.equal((await send()).status, 400);
+
+  // his branch + department, with a closing time and a reminder → he's notified and can submit
+  const before = db.prepare("SELECT COUNT(*) AS n FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.username = 'yossi' AND n.title = 'הסידור פתוח להגשה'").get().n;
+  const closes = addMinutes(nowLocal(), 120);
+  const opened = await admin.post('/schedule/windows', { week_start: ws, location_id: yEmp.location_id, department_id: yEmp.department_id, closes_at: closes, reminder_minutes: 180 });
+  assert.equal(opened.status, 201);
+  const after = db.prepare("SELECT COUNT(*) AS n FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.username = 'yossi' AND n.title = 'הסידור פתוח להגשה'").get().n;
+  assert.equal(after, before + 1, 'employees get an "open" notification');
+  const my = (await yossi.get(`/schedule/my?week=${ws}`)).body;
+  assert.equal(my.window.open, true);
+  assert.equal(my.window.closes_at, closes);
+
+  // reminder (3 hours before a closing that is 2 hours away → due now), only to people who haven't submitted, only once
+  assert.ok(checkSubmissionReminders() >= 1);
+  assert.equal(db.prepare("SELECT COUNT(*) AS n FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.username = 'yossi' AND n.title LIKE 'תזכורת: עוד לא הגשת%'").get().n, 1);
+  assert.equal(checkSubmissionReminders(), 0, 'only once');
+  assert.equal((await send()).status, 200);
+
+  // editing the reminder time sends it again later; managers of other branches can't edit or close it
+  const id = opened.body.window.id;
+  assert.equal((await mgr.put(`/schedule/windows/${id}`, { closes_at: closes, reminder_minutes: 60 })).status, 403);
+  assert.equal((await mgr.post(`/schedule/windows/${id}/close`)).status, 403);
+  assert.equal((await admin.put(`/schedule/windows/${id}`, { closes_at: closes, reminder_minutes: 60 })).status, 200);
+  assert.equal(checkSubmissionReminders(), 0, 'not yet: closing is 2 hours away');
+
+  // the manager sees only windows that touch their people
+  const list = (await mgr.get(`/schedule/windows?week=${ws}`)).body;
+  assert.ok(list.windows.every((w) => w.location_id === otherLoc || w.location_id === 0));
+  assert.equal(list.options.all_branches, false);
+  assert.deepEqual(list.options.branches.map((b) => b.id), [otherLoc]);
+
+  // closing stops submissions; it's in the activity log
+  assert.equal((await admin.post(`/schedule/windows/${id}/close`)).status, 200);
+  assert.equal((await send()).status, 400);
+  assert.ok(db.prepare("SELECT 1 FROM audit_logs WHERE action = 'schedule.submission_close'").get());
 });

@@ -5,6 +5,7 @@ import { getNumberSetting } from './settings.js';
 import { notifyEmployee, notifyPermission } from './notify.js';
 import { audit } from './audit.js';
 import { maybeDailyBackup } from './backup.js';
+import { checkSubmissionReminders } from './submission.js';
 
 export function checkLateEmployees() {
   const db = getDb();
@@ -58,7 +59,7 @@ export function checkTasksDueSoon() {
 
 export function startJobs() {
   const run = () => {
-    try { checkLateEmployees(); checkShiftEndReminders(); checkTasksDueSoon(); maybeDailyBackup(); } catch (e) { console.error('[jobs]', e); }
+    try { checkLateEmployees(); checkShiftEndReminders(); checkTasksDueSoon(); checkSubmissionReminders(); maybeDailyBackup(); } catch (e) { console.error('[jobs]', e); }
   };
   run();
   return setInterval(run, 60_000);

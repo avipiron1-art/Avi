@@ -427,3 +427,19 @@ CREATE TABLE IF NOT EXISTS shift_type_hidden (
   location_id   INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
   PRIMARY KEY (shift_type_id, location_id)
 );
+-- Availability submission windows: employees can send availability only while a manager opened it.
+-- location_id 0 = every branch, department_id 0 = every department. closes_at: local time, NULL = until closed by hand.
+CREATE TABLE IF NOT EXISTS schedule_submission_windows (
+  id               INTEGER PRIMARY KEY,
+  week_start       TEXT NOT NULL,
+  location_id      INTEGER NOT NULL DEFAULT 0,
+  department_id    INTEGER NOT NULL DEFAULT 0,
+  closes_at        TEXT,
+  reminder_minutes INTEGER NOT NULL DEFAULT 180,
+  reminder_sent_at TEXT,
+  opened_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  opened_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  closed_at        TEXT,
+  closed_by        INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  UNIQUE (week_start, location_id, department_id)
+);

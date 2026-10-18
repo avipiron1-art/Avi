@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
   ChevronRight, ChevronLeft, CalendarCheck, Send, LayoutGrid, Clock, Plus, Pencil, Crown, X, Save, CheckCircle2, UserX,
-  AlertTriangle, Users, Lock, StickyNote, Check, Repeat, MapPin, RotateCcw,
+  AlertTriangle, Users, Lock, StickyNote, Check, Repeat, MapPin, RotateCcw, DoorOpen, BellRing,
 } from 'lucide-react';
 import { useApi, useHolidays } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
@@ -20,6 +20,10 @@ const PREF = {
 };
 const typeTime = (t) => `${t.start_time}–${t.end_time}`;
 const weekLabel = (ws) => `${shortDate(ws)} – ${shortDate(addDays(ws, 6))}`;
+/** "יום חמישי 16/10 בשעה 20:00" */
+const whenLabel = (ts) => `יום ${dayName(ts)} ${shortDate(ts)} בשעה ${ts.slice(11, 16)}`;
+const REMINDERS = [[0, 'בלי תזכורת'], [30, 'חצי שעה לפני'], [60, 'שעה לפני'], [120, 'שעתיים לפני'], [180, '3 שעות לפני'], [360, '6 שעות לפני'], [720, '12 שעות לפני'], [1440, 'יום לפני'], [2880, 'יומיים לפני']];
+const reminderLabel = (m) => REMINDERS.find(([v]) => v === m)?.[1] || `${Math.round(m / 60)} שעות לפני`;
 
 /** Week picker: previous / next, with quick "this week" and "next week". */
 function WeekNav({ week, setWeek }) {
@@ -143,7 +147,11 @@ function Submit({ week, setWeek }) {
         <div className="card"><EmptyState icon={Clock} title="עדיין לא הוגדרו משמרות" text="המנהל צריך להגדיר את המשמרות (למשל בוקר וערב) לפני שאפשר להגיש זמינות." /></div>
       ) : (
         <>
-          {locked && <div className="alert tone-warning mb"><Lock size={18} /><span>{data.status === 'published' ? 'הסידור לשבוע זה כבר פורסם, ולכן אי אפשר לשנות את הזמינות. לשינויים פנו למנהל.' : 'השבוע הזה כבר עבר.'}</span></div>}
+          {data.window?.open ? (
+            <div className="alert tone-success mb"><DoorOpen size={18} /><span><strong>ההגשה פתוחה</strong>{data.window.closes_at ? ` עד ${whenLabel(data.window.closes_at)}` : ''}. אפשר לשלוח ולעדכן את הזמינות עד הסגירה.</span></div>
+          ) : locked && (
+            <div className="alert tone-warning mb"><Lock size={18} /><span>{addDays(data.week_start, 6) < localToday() ? 'השבוע הזה כבר עבר.' : data.status === 'published' ? 'הסידור לשבוע זה כבר פורסם, ולכן אי אפשר לשנות את הזמינות. לשינויים פנו למנהל.' : 'ההגשה לשבוע הזה סגורה כרגע. כשהמנהל יפתח אותה תקבל/י התראה.'}</span></div>
+          )}
           {!locked && (
             <div className="card card-pad mb submit-help">
               <p>סמנו לכל משמרת אם אתם <strong>מעדיפים</strong>, <strong>יכולים</strong> או <strong>לא יכולים</strong> לעבוד בה. לחיצה נוספת מבטלת את הבחירה.</p>
@@ -189,6 +197,122 @@ function Submit({ week, setWeek }) {
         </>
       )}
     </>
+  );
+}
+
+// ============================ manager: open / close submission ============================
+function WindowForm({ week, options, initial, onClose, onSaved }) {
+  const toast = useToast();
+  const editing = !!initial?.id;
+  const defaultClose = `${addDays(week, -1)}T20:00`;
+  const nowTs = (() => { const d = new Date(); const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; })();
+  const startClose = initial?.closes_at && initial.closes_at > nowTs ? initial.closes_at : (initial?.id && initial.open) ? null : defaultClose > nowTs ? defaultClose : null;
+  const [v, setV] = useState({
+    location_id: String(initial?.location_id ?? (options.has_branches ? options.branches[0]?.id ?? 0 : 0)),
+    department_id: String(initial?.department_id ?? (options.all_departments ? 0 : options.departments[0]?.id ?? 0)),
+    hasClose: !!startClose, date: (startClose || defaultClose).slice(0, 10), time: (startClose || defaultClose).slice(11, 16),
+    reminder: String(initial?.reminder_minutes ?? 180),
+  });
+  const [saving, setSaving] = useState(false);
+  const set = (k) => (e) => setV((x) => ({ ...x, [k]: e.target.type === 'checkbox' ? e.target.checked : e.target.value }));
+  const save = async () => {
+    setSaving(true);
+    try {
+      const body = { closes_at: v.hasClose ? `${v.date}T${v.time}` : null, reminder_minutes: v.hasClose ? Number(v.reminder) : 0 };
+      const r = editing && initial.open
+        ? await api.put(`/schedule/windows/${initial.id}`, body)
+        : await api.post('/schedule/windows', { ...body, week_start: week, location_id: Number(v.location_id), department_id: Number(v.department_id) });
+      toast.success(r.message); onSaved(); onClose();
+    } catch (e) { toast.error(e); } finally { setSaving(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title={editing && initial.open ? 'עריכת ההגשה' : 'פתיחת הגשת זמינות'}
+      footer={<><Button onClick={onClose}>ביטול</Button><Button variant="primary" icon={editing && initial.open ? Save : DoorOpen} loading={saving} onClick={save}>{editing && initial.open ? 'שמירה' : 'פתיחה ושליחת התראה'}</Button></>}>
+      <div className="grid">
+        <p className="muted">שבוע <span className="ltr">{weekLabel(week)}</span>. העובדים שנבחרו יקבלו התראה ויוכלו להגיש זמינות עד הסגירה.</p>
+        <div className="form-grid">
+          {options.has_branches && (
+            <Field label="סניף">
+              <Select value={v.location_id} onChange={set('location_id')} disabled={editing}>
+                {options.all_branches && <option value="0">כל הסניפים</option>}
+                {options.branches.map((b) => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </Select>
+            </Field>
+          )}
+          <Field label="מחלקה">
+            <Select value={v.department_id} onChange={set('department_id')} disabled={editing}>
+              {options.all_departments && <option value="0">כל המחלקות</option>}
+              {options.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </Select>
+          </Field>
+        </div>
+        <label className="checkbox"><input type="checkbox" checked={v.hasClose} onChange={set('hasClose')} />לסגור את ההגשה אוטומטית במועד מסוים</label>
+        {v.hasClose ? (
+          <div className="form-grid">
+            <Field label="תאריך סגירה"><Input type="date" value={v.date} onChange={set('date')} /></Field>
+            <Field label="שעת סגירה"><Input type="time" value={v.time} onChange={set('time')} /></Field>
+            <Field label="תזכורת למי שעוד לא הגיש" hint="נשלחת לטלפון לפני הסגירה, רק למי שלא הגיש" className="full">
+              <Select value={v.reminder} onChange={set('reminder')}>{REMINDERS.map(([m, l]) => <option key={m} value={m}>{l}</option>)}</Select>
+            </Field>
+          </div>
+        ) : <p className="subtle">ההגשה תישאר פתוחה עד שתסגור/י אותה בעצמך.</p>}
+      </div>
+    </Modal>
+  );
+}
+
+/** Board panel: which branches / departments are open for submitting availability this week. */
+function SubmissionWindows({ week, branch }) {
+  const toast = useToast();
+  const { data, reload } = useApi('/schedule/windows', { week });
+  const [form, setForm] = useState(null);
+  const [confirm, confirmDialog] = useConfirm();
+  if (!data) return null;
+  const past = addDays(week, 6) < localToday();
+  const close = (w) => confirm({
+    title: 'לסגור את ההגשה?', message: `${w.label}: העובדים לא יוכלו להגיש או לעדכן זמינות עד שתפתח/י שוב.`, confirmText: 'סגירת ההגשה',
+    onConfirm: async () => { try { const r = await api.post(`/schedule/windows/${w.id}/close`); toast.success(r.message); reload({ silent: true }); } catch (e) { toast.error(e); throw e; } },
+  });
+  const open = data.windows.filter((w) => w.open);
+  return (
+    <section className="card card-pad mb sub-windows" aria-label="הגשת זמינות">
+      <div className="sub-windows-head">
+        <div>
+          <h2 className="flex"><DoorOpen size={18} />הגשת זמינות לשבוע</h2>
+          <p className="subtle">{open.length ? 'העובדים באזורים הפתוחים יכולים להגיש עכשיו.' : 'ההגשה סגורה. העובדים לא יכולים להגיש זמינות עד שתפתח/י אותה.'}</p>
+        </div>
+        {!past && <Button variant="primary" icon={DoorOpen} onClick={() => setForm({ location_id: branch || undefined })}>פתיחה להגשה</Button>}
+      </div>
+      {data.windows.length > 0 && (
+        <ul className="sub-windows-list">
+          {data.windows.map((w) => (
+            <li key={w.id} className={w.open ? '' : 'is-closed'}>
+              <div className="sub-windows-main">
+                <strong>{w.label}</strong>
+                <span className="subtle">
+                  {w.open ? (w.closes_at ? `פתוחה עד ${whenLabel(w.closes_at)}` : 'פתוחה עד סגירה ידנית') : 'סגורה'}
+                  {w.open && w.closes_at && w.reminder_minutes > 0 && <> · <BellRing size={13} className="inline-icon" />תזכורת {reminderLabel(w.reminder_minutes)}{w.reminder_sent ? ' (נשלחה)' : ''}</>}
+                </span>
+              </div>
+              <Badge tone={w.open ? 'success' : 'neutral'} dot>{w.open ? 'פתוחה' : 'סגורה'}</Badge>
+              <span className="subtle nowrap">הגישו {w.submitted}/{w.people}</span>
+              {w.can_edit && !past && (
+                <div className="sub-windows-actions">
+                  {w.open ? (
+                    <>
+                      <IconButton icon={Pencil} label="עריכת מועד הסגירה והתזכורת" small onClick={() => setForm(w)} />
+                      <Button size="sm" variant="ghost" icon={Lock} onClick={() => close(w)}>סגירה</Button>
+                    </>
+                  ) : <Button size="sm" variant="ghost" icon={RotateCcw} onClick={() => setForm({ ...w, open: false })}>פתיחה מחדש</Button>}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      {form && <WindowForm week={week} options={data.options} initial={form.id ? form : form.location_id ? { location_id: form.location_id } : null} onClose={() => setForm(null)} onSaved={() => reload({ silent: true })} />}
+      {confirmDialog}
+    </section>
   );
 }
 
@@ -428,6 +552,8 @@ function Board({ week, setWeek, branch, setBranch }) {
         <BranchPicker data={data} branch={branch} setBranch={(b) => (dirty ? confirm({ title: 'לעבור סניף?', message: 'יש שינויים שלא נשמרו בלוח הזה.', confirmText: 'מעבר בלי לשמור', onConfirm: () => setBranch(b) }) : setBranch(b))} />
         {published ? <Badge tone="success" dot>פורסם</Badge> : dirty ? <Badge tone="warning" dot>יש שינויים שלא נשמרו</Badge> : <Badge dot>טיוטה</Badge>}
       </div>
+
+      <SubmissionWindows week={week} branch={data.location_id} />
 
       <div className="card card-pad mb board-summary">
         <div className="board-summary-stats">
