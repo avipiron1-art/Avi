@@ -825,3 +825,26 @@ test('email: settings are admin-only and secret, reset/invite/notifications send
   db.prepare("UPDATE users SET email = 'yossi@shiftly.demo' WHERE username = 'yossi'").run();
   assert.equal((await admin.del('/mail/config')).body.enabled, false);
 });
+
+test('activity history can be deleted only by the main admin with the password; the log stays immutable otherwise', async () => {
+  const db = getDb();
+  const admin = await login('admin', 'Admin1234');
+  const smName = db.prepare("SELECT u.username FROM users u JOIN roles r ON r.id = u.role_id WHERE r.key = 'shift_manager' LIMIT 1").get().username;
+  const sm = await login(smName, 'Manager1234');
+  assert.equal((await sm.post('/audit/purge', { keep_days: 0, password: 'Manager1234' })).status, 403);
+  assert.equal((await admin.post('/audit/purge', { keep_days: 0, password: 'wrong' })).status, 400);
+  assert.equal((await admin.post('/audit/purge', { keep_days: 7, password: 'Admin1234' })).status, 400);
+  db.exec("DROP TRIGGER audit_logs_no_update"); // allow back-dating one row for the test
+  db.prepare("UPDATE audit_logs SET created_at = datetime('now', '-400 day') WHERE id = (SELECT MIN(id) FROM audit_logs)").run();
+  db.exec("CREATE TRIGGER audit_logs_no_update BEFORE UPDATE ON audit_logs BEGIN SELECT RAISE(ABORT, 'audit log is immutable'); END;");
+  const before = db.prepare('SELECT COUNT(*) c FROM audit_logs').get().c;
+  const old = await admin.post('/audit/purge', { keep_days: 365, password: 'Admin1234' });
+  assert.equal(old.status, 200);
+  assert.equal(old.body.deleted, 1, 'only rows older than a year');
+  const all = await admin.post('/audit/purge', { keep_days: 0, password: 'Admin1234' });
+  assert.equal(all.body.deleted, before); // everything incl. the previous purge record
+  const left = db.prepare('SELECT * FROM audit_logs').all();
+  assert.equal(left.length, 1, 'the purge itself stays recorded');
+  assert.equal(left[0].action, 'audit.purge');
+  assert.throws(() => db.prepare('DELETE FROM audit_logs').run(), /immutable/, 'still protected afterwards');
+});
