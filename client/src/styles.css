@@ -143,7 +143,9 @@ img.brand-logo.has-img { background: #fff; object-fit: contain; padding: 3px; bo
 /* ---------- cards & grid ---------- */
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow-sm); }
 .card-pad { padding: 20px; }
-.card-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.card-header { display: flex; align-items: center; justify-content: space-between; gap: 10px 12px; padding: 16px 20px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+.card-header > .flex { flex-wrap: wrap; min-width: 0; max-width: 100%; }
+.card-header select { max-width: 100%; }
 .card-header h2 { display: flex; align-items: center; gap: 8px; }
 .card-body { padding: 16px 20px; }
 .grid { display: grid; gap: 16px; }
@@ -704,3 +706,4 @@ td.ltr { display: table-cell; text-align: start; }
 .scope-option { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; cursor: pointer; }
 .scope-option.on { border-color: var(--primary); background: var(--primary-soft); }
 .scope-option input { margin-top: 4px; accent-color: var(--primary); flex: none; }
+.list-item.is-muted { opacity: .65; }

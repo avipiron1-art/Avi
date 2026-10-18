@@ -420,3 +420,10 @@ CREATE TABLE IF NOT EXISTS schedule_branch_weeks (
   published_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
   PRIMARY KEY (week_start, location_id)
 );
+-- Shift types per branch: shift_types.location_id NULL = shared by the whole chain.
+-- A branch can hide a shared type (e.g. after making its own version with other hours).
+CREATE TABLE IF NOT EXISTS shift_type_hidden (
+  shift_type_id INTEGER NOT NULL REFERENCES shift_types(id) ON DELETE CASCADE,
+  location_id   INTEGER NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+  PRIMARY KEY (shift_type_id, location_id)
+);

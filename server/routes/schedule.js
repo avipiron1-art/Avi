@@ -9,7 +9,7 @@ import { requirePerm, requireEmployee } from '../middleware/auth.js';
 import { addDays, startOfWeek, todayLocal, weekday, nowLocal } from '../lib/time.js';
 import { audit } from '../services/audit.js';
 import { notifyEmployee, notifyPermission } from '../services/notify.js';
-import { scopeBranches, scopeWhere } from '../services/scope.js';
+import { locationInScope, scopeBranches, scopeWhere } from '../services/scope.js';
 
 const router = Router();
 const fmt = (d) => `${d.slice(8, 10)}/${d.slice(5, 7)}`;
@@ -28,7 +28,29 @@ export function typeRange(type, date) {
   return { start_at, end_at };
 }
 
-const activeTypes = () => getDb().prepare('SELECT * FROM shift_types WHERE is_active = 1 ORDER BY sort_order, start_time, id').all();
+/**
+ * Shift types used in a branch: the chain's shared types (unless the branch hid them) + the branch's own types.
+ * loc 0 (no branches) = the shared types.
+ */
+function typesFor(loc = 0, { includeInactive = false } = {}) {
+  const active = includeInactive ? '' : 'AND t.is_active = 1';
+  return getDb().prepare(
+    `SELECT t.*, CASE WHEN t.location_id IS NULL THEN 1 ELSE 0 END AS shared FROM shift_types t
+     WHERE ((t.location_id IS NULL AND NOT EXISTS (SELECT 1 FROM shift_type_hidden h WHERE h.shift_type_id = t.id AND h.location_id = @loc))
+        OR t.location_id = @loc) ${active}
+     ORDER BY t.sort_order, t.start_time, t.id`,
+  ).all({ loc: Number(loc) || -1 });
+}
+/** Every shift type by id (for names in messages / other branches). */
+const allTypes = () => new Map(getDb().prepare('SELECT * FROM shift_types').all().map((t) => [t.id, t]));
+/** Types an employee can give preferences for: those of every branch they work in. */
+function typesForEmployee(employeeId) {
+  const branches = employeeBranches(employeeId);
+  if (!branches.length) return typesFor(0);
+  const map = new Map();
+  for (const b of branches) for (const t of typesFor(b.id)) if (!map.has(t.id)) map.set(t.id, t);
+  return [...map.values()].sort((a, b) => a.sort_order - b.sort_order || a.start_time.localeCompare(b.start_time));
+}
 
 // ---------- branches ----------
 // Each branch has its own board, staffing and publishing. loc 0 = a business without branches.
@@ -86,7 +108,7 @@ function requirementsFor(ws, loc = 0) {
   const overrides = db.prepare('SELECT * FROM slot_overrides WHERE date BETWEEN ? AND ? AND location_id IN (0, ?)').all(ws, addDays(ws, 6), loc);
   const map = new Map();
   for (const d of weekDays(ws)) {
-    for (const t of activeTypes()) {
+    for (const t of typesFor(loc)) {
       const o = overrides.find((x) => x.date === d && x.shift_type_id === t.id && x.location_id === loc)
         || overrides.find((x) => x.date === d && x.shift_type_id === t.id && x.location_id === 0);
       map.set(`${d}|${t.id}`, { date: d, shift_type_id: t.id, required_workers: o ? o.required_workers : t.required_workers, required_leads: o ? o.required_leads : t.required_leads, override: !!(o && o.location_id === loc) });
@@ -96,9 +118,22 @@ function requirementsFor(ws, loc = 0) {
 }
 
 // ======================= shift types =======================
+// Shared types belong to the whole chain; each branch manager can add their own types,
+// change a shared type for their branch (it becomes a branch version) or hide it in their branch.
 router.get('/shift-types', (req, res) => {
-  const all = req.query.all === '1' && req.can('schedule.manage');
-  res.json({ types: all ? getDb().prepare('SELECT * FROM shift_types ORDER BY is_active DESC, sort_order, start_time, id').all() : activeTypes() });
+  const manage = req.query.all === '1' && req.can('schedule.manage');
+  if (!manage) return res.json({ types: req.user.employee_id ? typesForEmployee(req.user.employee_id) : typesFor(0) });
+  const sc = req.user.scope;
+  const db = getDb();
+  if (!hasBranches() || (sc.all && String(req.query.location_id) === '0')) {
+    return res.json({
+      mode: 'chain', location_id: 0, can_chain: !!sc.all, branches: hasBranches() ? scopeBranches(sc) : [],
+      types: db.prepare('SELECT t.*, 1 AS shared FROM shift_types t WHERE t.location_id IS NULL ORDER BY t.is_active DESC, t.sort_order, t.start_time, t.id').all(),
+    });
+  }
+  const { loc, branches } = managerBranch(req, req.query.location_id);
+  const hidden = db.prepare('SELECT t.*, 1 AS shared, 1 AS hidden FROM shift_types t JOIN shift_type_hidden h ON h.shift_type_id = t.id WHERE h.location_id = ?').all(loc);
+  res.json({ mode: 'branch', location_id: loc, can_chain: !!sc.all, branches, types: [...typesFor(loc, { includeInactive: true }), ...hidden] });
 });
 
 const typeSchema = z.object({
@@ -109,36 +144,83 @@ const typeSchema = z.object({
   is_active: z.boolean().default(true),
   required_workers: z.coerce.number().int().min(0).max(50).default(0),
   required_leads: z.coerce.number().int().min(0).max(10).default(0),
+  location_id: z.coerce.number().int().min(0).optional(), // the branch screen the change is made in (0 = whole chain)
 }).refine((t) => t.required_leads <= t.required_workers, { message: 'מספר האחמ"שים לא יכול להיות גדול ממספר העובדים', path: ['required_leads'] });
 
-const chainOnly = (req) => { if (!req.user.scope.all) throw forbidden('סוגי המשמרות משותפים לכל הרשת – רק מנהל עם אחריות על כל הרשת יכול לשנות אותם'); };
+const chainOnly = (req) => { if (hasBranches() && !req.user.scope.all) throw forbidden('רק מנהל עם אחריות על כל הרשת יכול לשנות משמרת משותפת לכל הסניפים'); };
+const branchOk = (req, loc) => { if (!locationInScope(req.user.scope, loc)) throw forbidden('הסניף לא באחריותך'); };
+const sameHours = (t) => { if (t.start_time === t.end_time) throw badRequest('שעת הסיום חייבת להיות שונה משעת ההתחלה', { fields: { end_time: 'זהה לשעת ההתחלה' } }); };
+const branchName = (loc) => (loc ? getDb().prepare('SELECT name FROM locations WHERE id = ?').get(loc)?.name : null);
 
 router.post('/shift-types', requirePerm('schedule.manage'), ah((req, res) => {
-  chainOnly(req);
   const t = validate(typeSchema, req.body);
-  if (t.start_time === t.end_time) throw badRequest('שעת הסיום חייבת להיות שונה משעת ההתחלה', { fields: { end_time: 'זהה לשעת ההתחלה' } });
-  const id = getDb().prepare('INSERT INTO shift_types (name, start_time, end_time, sort_order, is_active, required_workers, required_leads) VALUES (?, ?, ?, ?, ?, ?, ?)')
-    .run(t.name, t.start_time, t.end_time, t.sort_order, t.is_active ? 1 : 0, t.required_workers, t.required_leads).lastInsertRowid;
-  audit(req, { action: 'shift_type.create', entityType: 'shift_type', entityId: id, description: `${req.user.display_name} הגדיר/ה משמרת "${t.name}" ${t.start_time}–${t.end_time}`, newValue: t });
+  sameHours(t);
+  const loc = hasBranches() ? t.location_id || 0 : 0;
+  if (loc) branchOk(req, loc); else chainOnly(req);
+  const id = getDb().prepare('INSERT INTO shift_types (name, start_time, end_time, sort_order, is_active, required_workers, required_leads, location_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .run(t.name, t.start_time, t.end_time, t.sort_order, t.is_active ? 1 : 0, t.required_workers, t.required_leads, loc || null).lastInsertRowid;
+  const where = loc ? ` בסניף ${branchName(loc)}` : ' לכל הרשת';
+  audit(req, { action: 'shift_type.create', entityType: 'shift_type', entityId: id, description: `${req.user.display_name} הגדיר/ה משמרת "${t.name}" ${t.start_time}–${t.end_time}${where}`, newValue: t });
   res.status(201).json({ id, message: 'המשמרת נוספה' });
 }));
 
 router.put('/shift-types/:id', requirePerm('schedule.manage'), ah((req, res) => {
-  chainOnly(req);
   const id = paramId(req.params.id);
   const db = getDb();
   const before = db.prepare('SELECT * FROM shift_types WHERE id = ?').get(id);
   if (!before) throw notFound('המשמרת לא נמצאה');
   const t = validate(typeSchema, req.body);
-  if (t.start_time === t.end_time) throw badRequest('שעת הסיום חייבת להיות שונה משעת ההתחלה', { fields: { end_time: 'זהה לשעת ההתחלה' } });
-  db.prepare('UPDATE shift_types SET name = ?, start_time = ?, end_time = ?, sort_order = ?, is_active = ?, required_workers = ?, required_leads = ? WHERE id = ?')
-    .run(t.name, t.start_time, t.end_time, t.sort_order, t.is_active ? 1 : 0, t.required_workers, t.required_leads, id);
-  audit(req, {
-    action: 'shift_type.update', entityType: 'shift_type', entityId: id,
-    description: `${req.user.display_name} עדכן/ה את המשמרת "${t.name}" (${before.start_time}–${before.end_time} → ${t.start_time}–${t.end_time})`,
-    oldValue: before, newValue: t,
-  });
-  res.json({ message: 'המשמרת עודכנה. השינוי יחול על סידורים שיפורסמו מעכשיו.' });
+  sameHours(t);
+  const update = (typeId) => db.prepare('UPDATE shift_types SET name = ?, start_time = ?, end_time = ?, sort_order = ?, is_active = ?, required_workers = ?, required_leads = ? WHERE id = ?')
+    .run(t.name, t.start_time, t.end_time, t.sort_order, t.is_active ? 1 : 0, t.required_workers, t.required_leads, typeId);
+  const log = (description, extra = {}) => audit(req, { action: 'shift_type.update', entityType: 'shift_type', entityId: id, description, oldValue: before, newValue: { ...t, ...extra } });
+
+  // a branch's own type
+  if (before.location_id) {
+    branchOk(req, before.location_id);
+    update(id);
+    log(`${req.user.display_name} עדכן/ה את המשמרת "${t.name}" בסניף ${branchName(before.location_id)} (${before.start_time}–${before.end_time} → ${t.start_time}–${t.end_time})`);
+    return res.json({ message: 'המשמרת עודכנה. השינוי יחול על סידורים שיפורסמו מעכשיו.' });
+  }
+  // a shared type changed for the whole chain
+  const loc = hasBranches() ? t.location_id || 0 : 0;
+  if (!loc) {
+    chainOnly(req);
+    update(id);
+    log(`${req.user.display_name} עדכן/ה את המשמרת המשותפת "${t.name}" (${before.start_time}–${before.end_time} → ${t.start_time}–${t.end_time})`);
+    return res.json({ message: 'המשמרת עודכנה לכל הסניפים. השינוי יחול על סידורים שיפורסמו מעכשיו.' });
+  }
+  // a shared type changed for one branch only
+  branchOk(req, loc);
+  const name = branchName(loc);
+  if (!t.is_active) {
+    db.prepare('INSERT OR IGNORE INTO shift_type_hidden (shift_type_id, location_id) VALUES (?, ?)').run(id, loc);
+    log(`${req.user.display_name} הסתיר/ה את המשמרת "${before.name}" בסניף ${name}`, { hidden_in: name });
+    return res.json({ message: `המשמרת הוסתרה בסניף ${name}` });
+  }
+  const today = todayLocal();
+  const newId = db.transaction(() => {
+    const nid = db.prepare('INSERT INTO shift_types (name, start_time, end_time, sort_order, is_active, required_workers, required_leads, location_id) VALUES (?, ?, ?, ?, 1, ?, ?, ?)')
+      .run(t.name, t.start_time, t.end_time, t.sort_order, t.required_workers, t.required_leads, loc).lastInsertRowid;
+    db.prepare('INSERT OR IGNORE INTO shift_type_hidden (shift_type_id, location_id) VALUES (?, ?)').run(id, loc);
+    // upcoming plans of this branch move to the branch's version
+    db.prepare('UPDATE OR IGNORE schedule_assignments SET shift_type_id = ? WHERE shift_type_id = ? AND location_id = ? AND date >= ?').run(nid, id, loc, today);
+    db.prepare('UPDATE OR IGNORE slot_overrides SET shift_type_id = ? WHERE shift_type_id = ? AND location_id = ? AND date >= ?').run(nid, id, loc, today);
+    return nid;
+  })();
+  log(`${req.user.display_name} התאים/ה את המשמרת "${before.name}" לסניף ${name}: ${t.start_time}–${t.end_time}`, { branch: name, new_type_id: newId });
+  res.json({ id: newId, message: `המשמרת עודכנה לסניף ${name} בלבד. בשאר הסניפים היא נשארת כמו שהייתה.` });
+}));
+
+// show a shared type again in a branch (after hiding it or making a branch version)
+router.post('/shift-types/:id/restore', requirePerm('schedule.manage'), ah((req, res) => {
+  const id = paramId(req.params.id);
+  const { location_id: locId } = validate(z.object({ location_id: z.coerce.number().int().positive() }), req.body);
+  branchOk(req, locId);
+  getDb().prepare('DELETE FROM shift_type_hidden WHERE shift_type_id = ? AND location_id = ?').run(id, locId);
+  const t = getDb().prepare('SELECT name FROM shift_types WHERE id = ?').get(id);
+  audit(req, { action: 'shift_type.restore', entityType: 'shift_type', entityId: id, description: `${req.user.display_name} החזיר/ה את המשמרת המשותפת "${t?.name}" לסניף ${branchName(locId)}` });
+  res.json({ message: 'המשמרת המשותפת חזרה לסניף' });
 }));
 
 // ======================= employee: my preferences =======================
@@ -151,7 +233,7 @@ router.get('/my', requireEmployee, (req, res) => {
   const sub = db.prepare('SELECT note, submitted_at FROM schedule_submissions WHERE employee_id = ? AND week_start = ?').get(req.user.employee_id, ws);
   const state = weekState(ws, employeeBranch(req.user.employee_id).loc);
   res.json({
-    week_start: ws, days: weekDays(ws), types: activeTypes(), prefs, note: sub?.note || '', submitted_at: sub?.submitted_at || null,
+    week_start: ws, days: weekDays(ws), types: typesForEmployee(req.user.employee_id), prefs, note: sub?.note || '', submitted_at: sub?.submitted_at || null,
     status: state.status, locked: state.status === 'published' || addDays(ws, 6) < todayLocal(),
   });
 });
@@ -169,7 +251,7 @@ router.put('/my', requireEmployee, ah((req, res) => {
   if (state.status === 'published') throw badRequest('הסידור לשבוע זה כבר פורסם. לשינויים פנו למנהל.');
   if (addDays(ws, 6) < todayLocal()) throw badRequest('לא ניתן להגיש זמינות לשבוע שעבר');
   const days = new Set(weekDays(ws));
-  const typeIds = new Set(activeTypes().map((t) => t.id));
+  const typeIds = new Set(typesForEmployee(req.user.employee_id).map((t) => t.id));
   for (const p of body.prefs) {
     if (!days.has(p.date) || !typeIds.has(p.shift_type_id)) throw badRequest('נתוני זמינות לא תקינים');
   }
@@ -219,7 +301,7 @@ router.get('/board', requirePerm('schedule.manage'), (req, res) => {
     `SELECT employee_id, start_at, end_at FROM shifts
      WHERE status = 'scheduled' AND shift_type_id IS NULL AND start_at >= ? AND start_at < ? AND employee_id IN (${ids})`,
   ).all(`${ws}T00:00`, `${addDays(ws, 7)}T00:00`);
-  const types = new Map(activeTypes().map((t) => [t.id, t]));
+  const types = allTypes();
   for (const a of db.prepare(`SELECT * FROM schedule_assignments WHERE date BETWEEN ? AND ? AND location_id != ? AND employee_id IN (${ids})`).all(ws, end, loc)) {
     const t = types.get(a.shift_type_id);
     if (t) busy.push({ employee_id: a.employee_id, ...typeRange(t, a.date), other_branch: true });
@@ -229,7 +311,7 @@ router.get('/board', requirePerm('schedule.manage'), (req, res) => {
     location_id: loc,
     branches,
     days: weekDays(ws),
-    types: activeTypes(),
+    types: typesFor(loc),
     employees,
     prefs: db.prepare(`SELECT employee_id, date, shift_type_id, preference FROM shift_preferences WHERE date BETWEEN ? AND ? AND employee_id IN (${ids})`).all(ws, end),
     assignments: db.prepare(`SELECT date, shift_type_id, employee_id, is_lead, status, claimed_at FROM schedule_assignments WHERE date BETWEEN ? AND ? AND location_id = ?`).all(ws, end, loc),
@@ -268,7 +350,7 @@ function saveAssignments(req, ws, loc, list, loadedAt) {
   const late = existing.filter((a) => a.status === 'claimed' && !incoming.has(key(a)) && loaded && a.claimed_at && a.claimed_at > loaded);
   const claimedAt = new Map(existing.map((a) => [key(a), a.claimed_at]));
   const days = new Set(weekDays(ws));
-  const typeIds = new Set(activeTypes().map((t) => t.id));
+  const typeIds = new Set(typesFor(loc).map((t) => t.id));
   const leads = new Map(others.filter((a) => a.is_lead).map((a) => [`${a.date}|${a.shift_type_id}`, a.employee_id]));
   for (const a of list) {
     if (!days.has(a.date)) throw badRequest('תאריך מחוץ לשבוע שנבחר');
@@ -293,7 +375,7 @@ function saveAssignments(req, ws, loc, list, loadedAt) {
   })();
   // Tell employees what happened to their picks
   const byKey = new Map(list.map((a) => [key(a), a]));
-  const types = new Map(activeTypes().map((t) => [t.id, t.name]));
+  const types = new Map([...allTypes().values()].map((t) => [t.id, t.name]));
   for (const a of existing.filter((x) => x.status === 'claimed' && !late.includes(x))) {
     const now = byKey.get(key(a));
     const what = `${types.get(a.shift_type_id) || 'משמרת'} · ${fmt(a.date)}`;
@@ -322,7 +404,7 @@ router.post('/publish', requirePerm('schedule.manage'), ah((req, res) => {
   const pendingClaims = body.assignments.filter((a) => a.status === 'claimed').length;
   body.assignments = body.assignments.filter((a) => a.status !== 'claimed');
   const db = getDb();
-  const types = new Map(activeTypes().map((t) => [t.id, t]));
+  const types = new Map(typesFor(loc).map((t) => [t.id, t]));
   const now = nowLocal();
   const stats = { created: 0, updated: 0, cancelled: 0, kept: 0 };
   const touched = new Set();
@@ -452,7 +534,7 @@ router.get('/open', requireEmployee, (req, res) => {
   const state = weekState(ws, loc);
   const emp = getDb().prepare('SELECT can_lead FROM employees WHERE id = ?').get(req.user.employee_id);
   res.json({
-    week_start: ws, location_id: loc, branches, days: weekDays(ws), types: activeTypes(), slots: openSlots(ws, loc, req.user.employee_id),
+    week_start: ws, location_id: loc, branches, days: weekDays(ws), types: typesFor(loc), slots: openSlots(ws, loc, req.user.employee_id),
     can_lead: !!emp?.can_lead, status: state.status, locked: state.status === 'published' || addDays(ws, 6) < todayLocal(),
   });
 });
@@ -481,7 +563,7 @@ router.post('/claim', requireEmployee, ah((req, res) => {
     if (weekState(ws, loc).status !== 'published') setWeekState(ws, loc, 'draft');
     return slot;
   })();
-  const type = activeTypes().find((t) => t.id === d.shift_type_id);
+  const type = allTypes().get(d.shift_type_id);
   audit(req, { action: 'schedule.claim', entityType: 'employee', entityId: empId, description: `${req.user.display_name} בחר/ה משמרת ${type?.name} ב-${fmt(d.date)}${d.as_lead ? ' כאחמ"ש' : ''}`, newValue: { ...d, location_id: loc || null } });
   notifyPermission('schedule.manage', { type: 'shift_claimed', title: `${req.user.display_name} בחר/ה משמרת`, body: `${type?.name} · ${fmt(d.date)}${d.as_lead ? ' · כאחמ"ש' : ''} – ממתין לאישור`, link: `/schedule?tab=board&week=${ws}${loc ? `&location_id=${loc}` : ''}` }, { exceptUserId: req.user.id, about: loc ? { locationId: loc } : { employeeId: empId } });
   res.status(201).json({ slots: openSlots(ws, loc, empId), message: 'המשמרת נשמרה עבורך וממתינה לאישור המנהל' });
@@ -521,7 +603,7 @@ router.get('/published', ah((req, res) => {
      ORDER BY s.start_at, s.is_lead DESC, e.first_name`,
   ).all(`${ws}T00:00`, `${addDays(ws, 7)}T00:00`);
   // Shifts added manually in the calendar are grouped under a shift type when their hours match it exactly
-  const types = activeTypes();
+  const types = typesFor(pick.loc);
   const matchType = (r) => types.find((t) => {
     const { start_at, end_at } = typeRange(t, r.start_at.slice(0, 10));
     return start_at === r.start_at && end_at === r.end_at;

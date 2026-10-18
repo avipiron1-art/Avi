@@ -962,3 +962,39 @@ test('custom roles: main admin creates, edits and deletes a role with its own pe
   assert.equal((await admin.del(`/roles/${r.body.key}?move_to=employee`)).status, 200);
   assert.equal(db.prepare("SELECT r.key FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?").get(uid).key, 'employee');
 });
+
+test('shift types per branch: a branch manager adds, changes and hides types only for their branch', async () => {
+  const db = getDb();
+  const [loc1, loc2] = db.prepare('SELECT id FROM locations ORDER BY id LIMIT 2').all().map((l) => l.id);
+  const hash = db.prepare("SELECT password_hash FROM users WHERE username = 'yossi'").get().password_hash;
+  db.prepare("INSERT INTO role_permissions (role_id, permission) SELECT id, 'schedule.manage' FROM roles WHERE key = 'shift_manager' AND NOT EXISTS (SELECT 1 FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE r.key = 'shift_manager' AND rp.permission = 'schedule.manage')").run();
+  (await import('../services/permissions.js')).clearPermissionCache();
+  db.prepare("INSERT INTO users (username, email, display_name, password_hash, role_id, location_id) VALUES ('types.mgr', 'tm@x.io', 'tm', ?, (SELECT id FROM roles WHERE key = 'shift_manager'), ?)").run(hash, loc1);
+  const bm = await login('types.mgr', 'Employee1234');
+  const admin = await login('admin', 'Admin1234');
+  const shared = db.prepare('SELECT * FROM shift_types WHERE location_id IS NULL AND is_active = 1 ORDER BY id LIMIT 1').get();
+  const view = (await bm.get(`/schedule/shift-types?all=1&location_id=${loc1}`)).body;
+  assert.equal(view.mode, 'branch');
+  assert.equal(view.can_chain, false);
+
+  // add a type for the branch
+  assert.equal((await bm.post('/schedule/shift-types', { name: 'לילה סניפי', start_time: '23:00', end_time: '07:00', location_id: loc1 })).status, 201);
+  assert.equal((await bm.post('/schedule/shift-types', { name: 'X', start_time: '10:00', end_time: '12:00', location_id: loc2 })).status, 403, 'not my branch');
+  assert.equal((await bm.post('/schedule/shift-types', { name: 'X', start_time: '10:00', end_time: '12:00', location_id: 0 })).status, 403, 'chain-wide needs a chain manager');
+  const ws = (await admin.get(`/schedule/board?week=2033-03-06&location_id=${loc1}`)).body;
+  assert.ok(ws.types.some((t) => t.name === 'לילה סניפי'));
+  assert.ok(!(await admin.get(`/schedule/board?week=2033-03-06&location_id=${loc2}`)).body.types.some((t) => t.name === 'לילה סניפי'), 'other branch unaffected');
+
+  // change a shared type for this branch only → a branch version; the original is unchanged elsewhere
+  const r = await bm.put(`/schedule/shift-types/${shared.id}`, { ...shared, start_time: '08:00', is_active: true, location_id: loc1 });
+  assert.equal(r.status, 200);
+  assert.equal(db.prepare('SELECT start_time FROM shift_types WHERE id = ?').get(shared.id).start_time, shared.start_time);
+  const b1 = (await admin.get(`/schedule/board?week=2033-03-06&location_id=${loc1}`)).body.types;
+  assert.ok(b1.some((t) => t.id === r.body.id && t.start_time === '08:00') && !b1.some((t) => t.id === shared.id));
+  assert.ok((await admin.get(`/schedule/board?week=2033-03-06&location_id=${loc2}`)).body.types.some((t) => t.id === shared.id));
+  // restore the shared one in the branch
+  assert.equal((await bm.post(`/schedule/shift-types/${shared.id}/restore`, { location_id: loc1 })).status, 200);
+  assert.ok((await admin.get(`/schedule/board?week=2033-03-06&location_id=${loc1}`)).body.types.some((t) => t.id === shared.id));
+  // a chain manager can still change a shared type for everyone
+  assert.equal((await admin.put(`/schedule/shift-types/${shared.id}`, { ...shared, name: `${shared.name}`, is_active: true, location_id: 0 })).status, 200);
+});

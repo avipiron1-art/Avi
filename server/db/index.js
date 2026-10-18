@@ -65,6 +65,7 @@ function migrate(d) {
     d.exec("ALTER TABLE roles ADD COLUMN scope TEXT NOT NULL DEFAULT 'branch'");
     d.exec("UPDATE roles SET scope = 'all' WHERE key = 'admin'; UPDATE roles SET scope = 'self' WHERE key = 'employee';");
   }
+  add('shift_types', 'location_id', 'INTEGER REFERENCES locations(id) ON DELETE CASCADE'); // NULL = shared by every branch
   add('users', 'department_id', 'INTEGER REFERENCES departments(id) ON DELETE SET NULL'); // department a manager is responsible for
   if (!hasColumn(d, 'schedule_assignments', 'location_id')) {
     d.exec('ALTER TABLE schedule_assignments ADD COLUMN location_id INTEGER NOT NULL DEFAULT 0');
