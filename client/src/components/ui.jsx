@@ -103,15 +103,24 @@ export function Modal({ open, onClose, title, children, footer, wide, className 
   // locked: no close button, Escape or backdrop click (used for must-confirm messages)
   const close = locked ? undefined : onClose;
   const ref = useRef(null);
+  // Keep the latest close handler without re-running the effect: callers pass a new arrow function on
+  // every render, and re-running it would steal focus back to the first field after each keystroke.
+  const closeRef = useRef(close);
+  closeRef.current = close;
   useEffect(() => {
     if (!open) return undefined;
-    const onKey = (e) => { if (e.key === 'Escape') close?.(); };
+    const onKey = (e) => { if (e.key === 'Escape') closeRef.current?.(); };
     document.addEventListener('keydown', onKey);
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
-    setTimeout(() => ref.current?.querySelector('input:not([type=hidden]):not([type=checkbox]), select, textarea')?.focus(), 30);
-    return () => { document.removeEventListener('keydown', onKey); document.body.style.overflow = prev; };
-  }, [open, close]);
+    // Focus the first field once, when the window opens (not when the user is already typing somewhere)
+    const t = setTimeout(() => {
+      if (ref.current && !ref.current.contains(document.activeElement)) {
+        ref.current.querySelector('input:not([type=hidden]):not([type=checkbox]), select, textarea')?.focus();
+      }
+    }, 30);
+    return () => { clearTimeout(t); document.removeEventListener('keydown', onKey); document.body.style.overflow = prev; };
+  }, [open]);
   if (!open) return null;
   return (
     <div className="modal-backdrop" onMouseDown={(e) => { if (e.target === e.currentTarget) close?.(); }}>

@@ -7,8 +7,23 @@ let db;
 
 const hasColumn = (d, table, col) => d.prepare(`PRAGMA table_info(${table})`).all().some((c) => c.name === col);
 
+/** Older databases limited roles to the 3 built-in keys; rebuild the table so custom roles can be added. */
+function allowCustomRoles(d) {
+  const sql = d.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'roles'").get()?.sql || '';
+  if (!/CHECK\s*\(\s*key IN/i.test(sql)) return;
+  d.pragma('foreign_keys = OFF');
+  d.transaction(() => {
+    d.exec(`CREATE TABLE roles_new (id INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, name TEXT NOT NULL, description TEXT);
+      INSERT INTO roles_new (id, key, name, description) SELECT id, key, name, description FROM roles;
+      DROP TABLE roles;
+      ALTER TABLE roles_new RENAME TO roles;`);
+  })();
+  d.pragma('foreign_keys = ON');
+}
+
 /** Idempotent schema upgrades for databases created by earlier versions. */
 function migrate(d) {
+  allowCustomRoles(d);
   if (!hasColumn(d, 'shifts', 'shift_type_id')) {
     d.exec('ALTER TABLE shifts ADD COLUMN shift_type_id INTEGER REFERENCES shift_types(id) ON DELETE SET NULL');
   }

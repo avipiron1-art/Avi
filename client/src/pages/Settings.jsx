@@ -471,45 +471,110 @@ function Users() {
 }
 
 // ---------------- permissions matrix ----------------
-function Permissions() {
+/** Create or edit a role: name, description and its permissions. */
+function RoleEditor({ role, catalog, roles, onClose, onSaved }) {
   const toast = useToast();
-  const { data, loading, error, reload } = useApi('/permissions');
-  const [roles, setRoles] = useState(null);
+  const isNew = !role;
+  const locked = role?.locked;
+  const [v, setV] = useState({ name: role?.name || '', description: role?.description || '', permissions: role?.permissions || [] });
+  const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
-  useEffect(() => { if (data) setRoles(data.roles); }, [data]);
-  if (error) return <Card><ErrorState error={error} onRetry={reload} /></Card>;
-  if (loading || !roles) return <Card><SkeletonRows /></Card>;
-  const toggle = (roleKey, perm) => setRoles((rs) => rs.map((r) => (r.key !== roleKey || r.locked ? r : {
-    ...r, permissions: r.permissions.includes(perm) ? r.permissions.filter((p) => p !== perm) : [...r.permissions, perm],
-  })));
+  const toggle = (p) => setV((x) => ({ ...x, permissions: x.permissions.includes(p) ? x.permissions.filter((k) => k !== p) : [...x.permissions, p] }));
+  const copyFrom = (key) => { const r = roles.find((x) => x.key === key); if (r) setV((x) => ({ ...x, permissions: [...r.permissions] })); };
   const save = async () => {
     setSaving(true);
     try {
-      for (const r of roles.filter((x) => !x.locked)) await api.put(`/permissions/${r.key}`, { permissions: r.permissions });
-      toast.success('ההרשאות עודכנו בהצלחה');
-    } catch (e) { toast.error(e); } finally { setSaving(false); }
+      const body = { name: v.name, description: v.description, ...(locked ? {} : { permissions: v.permissions }) };
+      const r = isNew ? await api.post('/roles', body) : await api.put(`/roles/${role.key}`, body);
+      toast.success(r.message); onSaved(); onClose();
+    } catch (e) { setErrors(e.fields || {}); toast.error(e); } finally { setSaving(false); }
   };
   return (
-    <Card title="הרשאות לפי תפקיד" icon={ShieldCheck} pad={false} actions={<Button size="sm" variant="primary" icon={Save} onClick={save} loading={saving}>שמירה</Button>}>
-      <div className="table-wrap">
-        <table className="table perm-table">
-          <thead><tr><th>הרשאה</th>{roles.map((r) => <th key={r.key}>{r.name}{r.locked && <Lock size={12} style={{ marginInlineStart: 4 }} />}</th>)}</tr></thead>
-          <tbody>
-            {data.catalog.map((p) => (
-              <tr key={p.key}>
-                <td>{p.label}<div className="subtle ltr" style={{ display: 'block', textAlign: 'right' }}>{p.key}</div></td>
-                {roles.map((r) => (
-                  <td key={r.key}>
-                    <input type="checkbox" checked={r.locked || r.permissions.includes(p.key)} disabled={r.locked} onChange={() => toggle(r.key, p.key)}
-                      aria-label={`${p.label} – ${r.name}`} style={{ width: 18, height: 18, accentColor: 'var(--primary)' }} />
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
+    <Modal open onClose={onClose} wide title={isNew ? 'תפקיד חדש' : `עריכת תפקיד · ${role.name}`}
+      footer={<><Button onClick={onClose}>ביטול</Button><Button variant="primary" icon={Save} loading={saving} onClick={save} disabled={!v.name.trim()}>שמירה</Button></>}>
+      <div className="grid">
+        <div className="form-grid">
+          <Field label="שם התפקיד *" error={errors.name}><Input value={v.name} maxLength={40} onChange={(e) => setV((x) => ({ ...x, name: e.target.value }))} placeholder="לדוגמה: קופאי, טבח, מנהל אזור" /></Field>
+          <Field label="תיאור (לא חובה)"><Input value={v.description || ''} maxLength={200} onChange={(e) => setV((x) => ({ ...x, description: e.target.value }))} /></Field>
+        </div>
+        {locked ? <p className="muted">למנהל הראשי תמיד יש את כל ההרשאות. אפשר לשנות רק את השם.</p> : (
+          <>
+            <div className="flex flex-wrap between">
+              <strong>הרשאות ({v.permissions.length})</strong>
+              <Select value="" onChange={(e) => copyFrom(e.target.value)} style={{ width: 'auto' }} aria-label="העתקת הרשאות מתפקיד">
+                <option value="">העתקת הרשאות מתפקיד…</option>
+                {roles.filter((r) => r.key !== role?.key).map((r) => <option key={r.key} value={r.key}>{r.name}</option>)}
+              </Select>
+            </div>
+            <div className="perm-list perm-grid">
+              {catalog.map((p) => (
+                <label key={p.key} className="checkbox perm-item">
+                  <input type="checkbox" checked={v.permissions.includes(p.key)} onChange={() => toggle(p.key)} />
+                  <span>{p.label}</span>
+                </label>
+              ))}
+            </div>
+            <p className="subtle" style={{ margin: 0 }}>פעולות אישיות (המשמרות שלי, החתמת שעון, הגשת בקשות) זמינות לכל משתמש שמשויך לכרטיס עובד, בלי קשר לתפקיד.</p>
+          </>
+        )}
       </div>
-      <p className="subtle" style={{ padding: '12px 16px' }}>למנהל הראשי תמיד יש גישה מלאה. כדי לתת או להסיר הרשאה למשתמש מסוים בלבד, היכנסו ללשונית "משתמשים" ולחצו על סמל המגן ליד המשתמש. פעולות אישיות (צפייה במשמרות שלי, החתמת שעון, הגשת בקשות) זמינות לכל משתמש המשויך לכרטיס עובד.</p>
+    </Modal>
+  );
+}
+
+function DeleteRole({ role, roles, onClose, onDone }) {
+  const toast = useToast();
+  const [moveTo, setMoveTo] = useState('employee');
+  const [busy, setBusy] = useState(false);
+  const go = async () => {
+    setBusy(true);
+    try { const r = await api.del(`/roles/${role.key}${role.users ? `?move_to=${moveTo}` : ''}`); toast.success(r.message); onDone(); onClose(); } catch (e) { toast.error(e); } finally { setBusy(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title={`מחיקת התפקיד "${role.name}"`}
+      footer={<><Button onClick={onClose}>ביטול</Button><Button variant="danger" icon={Trash2} loading={busy} onClick={go}>מחיקה</Button></>}>
+      {role.users ? (
+        <Field label={`ל-${role.users} משתמשים יש את התפקיד הזה. לאיזה תפקיד להעביר אותם?`}>
+          <Select value={moveTo} onChange={(e) => setMoveTo(e.target.value)}>
+            {roles.filter((r) => r.key !== role.key && r.key !== 'admin').map((r) => <option key={r.key} value={r.key}>{r.name}</option>)}
+          </Select>
+        </Field>
+      ) : <p style={{ margin: 0 }}>אין משתמשים עם התפקיד הזה. אפשר למחוק אותו בבטחה.</p>}
+    </Modal>
+  );
+}
+
+function Permissions() {
+  const { reloadMeta } = useAuth();
+  const { data, loading, error, reload: reloadRoles } = useApi('/permissions');
+  const reload = (o) => { reloadRoles(o); reloadMeta(); }; // the user form's role list comes from meta
+  const [edit, setEdit] = useState(null); // role object, or {} for a new one
+  const [del, setDel] = useState(null);
+  if (error) return <Card><ErrorState error={error} onRetry={reload} /></Card>;
+  if (loading && !data) return <Card><SkeletonRows /></Card>;
+  const canEdit = data.can_edit;
+  return (
+    <Card title="תפקידים והרשאות" icon={ShieldCheck} pad={false}
+      actions={canEdit && <Button size="sm" variant="primary" icon={Plus} onClick={() => setEdit({})}>תפקיד חדש</Button>}>
+      <div className="list">
+        {data.roles.map((r) => (
+          <div key={r.key} className="list-item role-row">
+            <span className={`kpi-icon tone-${r.key === 'admin' ? 'danger' : r.key === 'shift_manager' ? 'warning' : r.custom ? 'primary' : 'neutral'}`}>{r.locked ? <Lock size={16} /> : <ShieldCheck size={16} />}</span>
+            <div className="grow">
+              <div style={{ fontWeight: 600 }}>{r.name}{r.custom && <>{" "}<Badge tone="primary">מותאם</Badge></>}</div>
+              <div className="subtle">{r.locked ? 'כל ההרשאות' : `${r.permissions.length} הרשאות`} · {r.users} משתמשים{r.description ? ` · ${r.description}` : ''}</div>
+            </div>
+            {canEdit && <IconButton icon={Pencil} label={`עריכת ${r.name}`} small onClick={() => setEdit(r)} />}
+            {canEdit && r.custom && <IconButton icon={Trash2} label={`מחיקת ${r.name}`} small onClick={() => setDel(r)} />}
+          </div>
+        ))}
+      </div>
+      <p className="subtle" style={{ padding: '12px 16px', margin: 0 }}>
+        {canEdit ? 'לחצו על העיפרון כדי לשנות שם או הרשאות. ' : 'רק המנהל הראשי יכול לשנות תפקידים והרשאות. '}
+        כדי לתת או להסיר הרשאה למשתמש אחד בלבד, היכנסו ללשונית "משתמשים" ולחצו על סמל המגן ליד המשתמש.
+      </p>
+      {edit && <RoleEditor role={edit.key ? edit : null} catalog={data.catalog} roles={data.roles} onClose={() => setEdit(null)} onSaved={() => reload({ silent: true })} />}
+      {del && <DeleteRole role={del} roles={data.roles} onClose={() => setDel(null)} onDone={() => reload({ silent: true })} />}
     </Card>
   );
 }

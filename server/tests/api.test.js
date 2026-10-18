@@ -423,9 +423,16 @@ test('databases created by the previous version are upgraded in place', async ()
   const old = new Database(file);
   old.exec(fs.readFileSync(new URL('./fixtures/schema-v1.sql', import.meta.url), 'utf8')); // schema of the first release
   old.exec(`INSERT INTO employees (employee_code, first_name, last_name, start_date) VALUES ('E1','a','b','2026-01-01');
-    INSERT INTO shifts (employee_id, start_at, end_at) VALUES (1, '2026-01-01T08:00', '2026-01-01T16:00');`);
+    INSERT INTO shifts (employee_id, start_at, end_at) VALUES (1, '2026-01-01T08:00', '2026-01-01T16:00');
+    INSERT INTO roles (key, name) VALUES ('admin','מנהל ראשי'),('employee','עובד');
+    INSERT INTO role_permissions (role_id, permission) VALUES (2, 'tasks.manage');
+    INSERT INTO users (username, email, display_name, password_hash, role_id) VALUES ('user1','u1@x.io','U',  'x', 2);`);
   old.close();
   const db = openDb(file);
+  db.prepare("INSERT INTO roles (key, name) VALUES ('custom_test', 'קופאי')").run(); // custom roles allowed after upgrade
+  assert.equal(db.prepare("SELECT r.key FROM users u JOIN roles r ON r.id = u.role_id WHERE u.username = 'user1'").get().key, 'employee', 'users keep their role');
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM role_permissions').get().c >= 1, true, 'role permissions kept');
+  assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(), []);
   const cols = db.prepare('PRAGMA table_info(shifts)').all().map((c) => c.name);
   assert.ok(cols.includes('shift_type_id') && cols.includes('is_lead'));
   assert.equal(db.prepare('SELECT COUNT(*) c FROM shifts').get().c, 1, 'existing data kept');
@@ -847,4 +854,45 @@ test('activity history can be deleted only by the main admin with the password; 
   assert.equal(left.length, 1, 'the purge itself stays recorded');
   assert.equal(left[0].action, 'audit.purge');
   assert.throws(() => db.prepare('DELETE FROM audit_logs').run(), /immutable/, 'still protected afterwards');
+});
+
+test('custom roles: main admin creates, edits and deletes a role with its own permissions', async () => {
+  const db = getDb();
+  const admin = await login('admin', 'Admin1234');
+  const smName = db.prepare("SELECT u.username FROM users u JOIN roles r ON r.id = u.role_id WHERE r.key = 'shift_manager' LIMIT 1").get().username;
+  const sm = await login(smName, 'Manager1234');
+  assert.equal((await sm.post('/roles', { name: 'x' })).status, 403);
+  const r = await admin.post('/roles', { name: 'קופאי', description: 'עובד קופה', permissions: ['reports.view', 'tasks.manage'] });
+  assert.equal(r.status, 201);
+  assert.equal((await admin.post('/roles', { name: 'קופאי' })).status, 409, 'unique name');
+  const roles = (await admin.get('/permissions')).body.roles;
+  const cashier = roles.find((x) => x.key === r.body.key);
+  assert.ok(cashier.custom);
+  assert.deepEqual(cashier.permissions.sort(), ['reports.view', 'tasks.manage']);
+  // assign to a user → the server enforces the role's permissions
+  const hash = db.prepare("SELECT password_hash FROM users WHERE username = 'yossi'").get().password_hash;
+  db.prepare("INSERT INTO users (username, email, display_name, password_hash, role_id) VALUES ('cashier1', 'c1@x.io', 'קופאית', ?, (SELECT id FROM roles WHERE key = 'employee'))").run(hash);
+  const uid = db.prepare("SELECT id FROM users WHERE username = 'cashier1'").get().id;
+  const u = (await admin.get('/users')).body.users.find((x) => x.id === uid);
+  assert.equal((await admin.put(`/users/${uid}`, { ...u, role: 'no_such_role', is_active: true })).status, 400);
+  assert.equal((await admin.put(`/users/${uid}`, { ...u, role: r.body.key, is_active: true })).status, 200);
+  const c = await login('cashier1', 'Employee1234');
+  assert.equal((await c.get(`/reports?from=2026-01-01&to=2026-01-31`)).status, 200);
+  assert.equal((await c.get('/employees')).status, 403);
+  // edit: rename + change permissions
+  assert.equal((await admin.put(`/roles/${r.body.key}`, { name: 'קופאי ראשי', permissions: ['employees.view'] })).status, 200);
+  assert.equal((await c.get('/employees')).status, 200);
+  assert.equal((await c.get(`/reports?from=2026-01-01&to=2026-01-31`)).status, 403);
+  // built-ins can be renamed but not deleted; admin keeps everything
+  assert.equal((await admin.del('/roles/employee')).status, 403);
+  assert.equal((await admin.put('/roles/admin', { name: 'בעלים', permissions: [] })).status, 200);
+  assert.equal((await admin.get('/permissions')).body.roles.find((x) => x.key === 'admin').permissions.length > 10, true);
+  await admin.put('/roles/admin', { name: 'מנהל ראשי' });
+  // delete needs a target role while users still have it
+  const del = await admin.del(`/roles/${r.body.key}`);
+  assert.equal(del.status, 409);
+  assert.equal(del.body.users, 1);
+  assert.equal((await admin.del(`/roles/${r.body.key}?move_to=admin`)).status, 409, 'cannot move people to main admin this way');
+  assert.equal((await admin.del(`/roles/${r.body.key}?move_to=employee`)).status, 200);
+  assert.equal(db.prepare("SELECT r.key FROM users u JOIN roles r ON r.id = u.role_id WHERE u.id = ?").get(uid).key, 'employee');
 });
