@@ -898,3 +898,43 @@ h2 { font-size: 1.12rem; font-weight: 700; letter-spacing: -.01em; }
 @media (max-width: 640px) {
   .toolbar .select { flex: 1 1 calc(50% - 5px); }
 }
+
+/* ---------- iOS-style grouped list (phone employee list) ---------- */
+.toolbar-chips { display: contents; }
+.search-icon-btn { display: none; }
+.ios-group-title { font-size: .8rem; font-weight: 700; color: var(--text-2); padding: 0 16px 6px; margin: 0; }
+.ios-group-body { background: var(--surface); border-radius: 16px; overflow: hidden; box-shadow: var(--shadow-sm); }
+.ios-row { position: relative; border-bottom: 0 !important; color: var(--text); text-decoration: none !important; min-height: 62px; padding: 10px 16px; }
+.ios-row:not(:last-child)::after { content: ''; position: absolute; bottom: 0; inset-inline-end: 0; inset-inline-start: 70px; height: .5px; background: var(--border-strong); }
+.ios-row:active { background: var(--surface-3); }
+.ios-chevron { color: #aeaeb2; flex: none; }
+.mobile-list .ios-group + .ios-group { margin-top: 18px; }
+
+@media (max-width: 900px) {
+  /* no bar on top: just a few round buttons, like the native apps */
+  .topbar { position: static; height: 56px; padding: 8px 14px 0; background: transparent; backdrop-filter: none; -webkit-backdrop-filter: none; border-bottom: 0; }
+  .topbar .search-trigger, .topbar .menu-btn, .topbar .icon-btn.menu-btn { display: none !important; }
+  .topbar .search-icon-btn { display: inline-grid; }
+  .topbar .icon-btn { width: 40px; height: 40px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  .topbar-actions { gap: 8px; }
+  .topbar-actions > div > .btn-ghost { padding-inline: 0 !important; height: 40px; background: transparent; }
+  .content { padding-top: 6px; }
+  /* slimmer "turn on phone alerts" banner */
+  .push-toggle.compact { padding: 10px 12px; gap: 10px; flex-wrap: nowrap; }
+  .push-toggle.compact .push-toggle-text { min-width: 0; }
+  .push-toggle.compact .push-toggle-text span { display: none; }
+  .push-toggle.compact .push-toggle-icon { width: 32px; height: 32px; }
+}
+@media (max-width: 640px) {
+  .page-header { flex-wrap: nowrap; align-items: flex-end; }
+  .page-header > div:first-child { min-width: 0; }
+  .page-header .actions { flex-wrap: nowrap; flex-shrink: 0; }
+  .toolbar { gap: 10px; }
+  .toolbar .segmented { width: 100%; display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  .toolbar .segmented button { justify-content: center; padding: 0 6px; }
+  .toolbar-chips { display: flex; gap: 8px; overflow-x: auto; width: 100%; scrollbar-width: none; padding-bottom: 2px; }
+  .toolbar-chips::-webkit-scrollbar { display: none; }
+  .toolbar-chips .select { flex: none; width: auto; min-width: 0; height: 36px; border-radius: 999px; font-size: .9rem; padding-inline: 14px 30px; background-color: var(--surface); box-shadow: var(--shadow-sm); }
+  .emp-card { background: transparent; box-shadow: none; border-radius: 0; }
+}
+.bottom-nav .dot-badge { top: -2px; inset-inline-end: auto; inset-inline-start: calc(50% + 6px); }

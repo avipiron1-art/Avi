@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
-import { Plus, Search, Pencil, Trash2, UserX, UserCheck, Users, Download, MoreVertical, Link2 } from 'lucide-react';
+import { Plus, Search, Pencil, Trash2, UserX, UserCheck, Users, Download, ChevronLeft, Link2 } from 'lucide-react';
 import { useApi, useDebounced } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
@@ -11,6 +11,17 @@ import {
 import EmployeeForm from '../components/EmployeeForm.jsx';
 import InviteModal from '../components/InviteModal.jsx';
 import { EMPLOYEE_STATUS, fullDate, money } from '../lib/format.js';
+
+/** Phone list: employees grouped under their department, like the iOS grouped list. */
+function groupByDepartment(employees) {
+  const groups = new Map();
+  for (const e of employees) {
+    const k = e.department_name || 'ללא מחלקה';
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(e);
+  }
+  return [...groups.entries()];
+}
 
 export default function Employees() {
   const { meta, can, user } = useAuth();
@@ -80,20 +91,26 @@ export default function Employees() {
           <>
             <Button icon={Download} onClick={exportCsv} disabled={!employees.length}><span className="btn-label">ייצוא</span></Button>
             {canManage && <Button icon={Link2} onClick={() => setInviting(true)}><span className="btn-label">הזמנה בקישור</span></Button>}
-            {canManage && <Button variant="primary" icon={Plus} onClick={() => setForm({})}>הוספת עובד</Button>}
+            {canManage && <Button variant="primary" icon={Plus} onClick={() => setForm({})} aria-label="הוספת עובד"><span className="btn-label">הוספת עובד</span></Button>}
           </>
         )} />
 
       <div className="toolbar">
-        <div className="input-icon"><Search size={17} /><Input placeholder="חיפוש לפי שם, מזהה, טלפון או אימייל" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="חיפוש עובד" /></div>
+        <div className="input-icon"><Search size={17} /><Input type="search" placeholder="חיפוש לפי שם, מזהה, טלפון או אימייל" value={search} onChange={(e) => setSearch(e.target.value)} aria-label="חיפוש עובד" /></div>
+        <div className="segmented" role="group" aria-label="סטטוס">
+          {[['', 'הכל'], ['active', 'פעילים'], ['vacation', 'בחופשה'], ['inactive', 'לא פעילים']].map(([k, label]) => (
+            <button key={k || 'all'} type="button" className={filters.status === k ? 'active' : ''} aria-pressed={filters.status === k} onClick={() => setFilters((f) => ({ ...f, status: k }))}>{label}</button>
+          ))}
+        </div>
+        <div className="toolbar-chips">
         {branchOptions.length > 1 && <Select value={filters.location_id} onChange={setF('location_id')} aria-label="סניף"><option value="">כל הסניפים</option>{branchOptions.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select>}
         <Select value={filters.department_id} onChange={setF('department_id')} aria-label="מחלקה"><option value="">כל המחלקות</option>{meta.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select>
         <Select value={filters.position_id} onChange={setF('position_id')} aria-label="תפקיד"><option value="">כל התפקידים</option>{meta.positions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select>
-        <Select value={filters.status} onChange={setF('status')} aria-label="סטטוס"><option value="">כל הסטטוסים</option>{Object.entries(EMPLOYEE_STATUS).map(([k, s]) => <option key={k} value={k}>{s.label}</option>)}</Select>
         {hasFilters && <Button variant="ghost" onClick={() => { setSearch(''); setFilters({ department_id: '', position_id: '', status: '', location_id: '' }); }}>ניקוי</Button>}
+        </div>
       </div>
 
-      <Card pad={false}>
+      <Card pad={false} className="emp-card">
         {error ? <ErrorState error={error} onRetry={reload} /> : loading && !data ? <SkeletonRows rows={8} /> : !employees.length ? (
           hasFilters
             ? <EmptyState icon={Search} title="לא נמצאו עובדים" text="נסו לשנות את החיפוש או את הסינון." />
@@ -133,18 +150,24 @@ export default function Employees() {
               </table>
             </div>
             <div className="mobile-list">
-              {employees.map((e) => (
-                <div key={e.id} className="list-item" role="button" tabIndex={0} onClick={() => navigate(`/employees/${e.id}`)}>
-                  <div className="grow"><Person name={e.full_name} avatar={e.avatar} sub={[e.position_name, e.department_name].filter(Boolean).join(' · ')} size={42} /></div>
-                  <StatusBadge map={EMPLOYEE_STATUS} value={e.status} />
-                  {canManage && <IconButton icon={MoreVertical} label="עריכה" small onClick={(ev) => { ev.stopPropagation(); setForm(e); }} />}
-                </div>
+              {groupByDepartment(employees).map(([dep, list]) => (
+                <section key={dep} className="ios-group">
+                  <h3 className="ios-group-title">{dep} · {list.length}</h3>
+                  <div className="ios-group-body">
+                    {list.map((e) => (
+                      <a key={e.id} href={`/employees/${e.id}`} className="list-item ios-row" onClick={(ev) => { ev.preventDefault(); navigate(`/employees/${e.id}`); }}>
+                        <div className="grow"><Person name={e.full_name} avatar={e.avatar} sub={e.position_name || ''} size={42} /></div>
+                        {e.status !== 'active' && <StatusBadge map={EMPLOYEE_STATUS} value={e.status} />}
+                        <ChevronLeft size={18} className="ios-chevron" aria-hidden="true" />
+                      </a>
+                    ))}
+                  </div>
+                </section>
               ))}
             </div>
           </>
         )}
       </Card>
-      {canManage && <button type="button" className="fab" aria-label="הוספת עובד" onClick={() => setForm({})}><Plus size={24} /></button>}
       {form && <EmployeeForm open onClose={() => setForm(null)} employee={form.id ? form : null} onSaved={() => reload({ silent: true })} onDeleted={() => reload({ silent: true })} />}
       {inviting && <InviteModal onClose={() => { setInviting(false); reload({ silent: true }); }} />}
       {confirmDialog}
