@@ -321,4 +321,28 @@ router.get('/audit', requirePerm('audit.view'), (req, res) => {
   res.json({ logs, total, page, pages: Math.max(1, Math.ceil(total / size)) });
 });
 
+// Delete activity history – main admin only, with the password. The log is otherwise immutable
+// (database triggers); they are lifted only inside this transaction. The deletion itself stays recorded.
+router.post('/audit/purge', ah(async (req, res) => {
+  if (req.user.role !== 'admin') throw forbidden('רק מנהל ראשי יכול למחוק היסטוריית פעילות');
+  const b = validate(z.object({
+    keep_days: z.coerce.number().int().refine((n) => [0, 30, 90, 365].includes(n), 'טווח לא תקין'),
+    password: z.string().max(200).default(''),
+  }), req.body);
+  const db = getDb();
+  const me = db.prepare('SELECT password_hash FROM users WHERE id = ?').get(req.user.id);
+  if (!b.password || !(await bcrypt.compare(b.password, me.password_hash))) throw badRequest('הסיסמה שגויה', { fields: { password: 'הסיסמה שגויה' } });
+  const cutoff = b.keep_days ? `AND created_at < datetime('now', '-${b.keep_days} day')` : '';
+  let deleted = 0;
+  db.transaction(() => {
+    db.exec('DROP TRIGGER IF EXISTS audit_logs_no_delete');
+    deleted = db.prepare(`DELETE FROM audit_logs WHERE 1 = 1 ${cutoff}`).run().changes;
+    db.exec(`CREATE TRIGGER audit_logs_no_delete BEFORE DELETE ON audit_logs
+      BEGIN SELECT RAISE(ABORT, 'audit log is immutable'); END;`);
+  })();
+  const what = b.keep_days ? `שישנה מ-${b.keep_days} ימים` : 'כולה';
+  audit(req, { action: 'audit.purge', entityType: 'audit', description: `${req.user.display_name} מחק/ה את היסטוריית הפעילות ${what} (${deleted} רשומות)` });
+  res.json({ deleted, message: deleted ? `נמחקו ${deleted} רשומות מההיסטוריה` : 'לא היו רשומות למחיקה בטווח שנבחר' });
+}));
+
 export default router;

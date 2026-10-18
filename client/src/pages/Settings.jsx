@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
-  KeyRound, Building2, Network, UserCog, ShieldCheck, History, Plus, Pencil, Trash2, Save, Search, Lock, ChevronDown, ChevronUp, Moon, Sun, RotateCcw, MapPin, Upload, Image as ImageIcon, Fingerprint, CloudUpload, Mail,
+  KeyRound, Building2, Network, UserCog, ShieldCheck, History, Plus, Pencil, Trash2, Save, Search, Lock, ChevronDown, ChevronUp, Moon, Sun, RotateCcw, MapPin, Upload, Image as ImageIcon, Fingerprint, CloudUpload, Mail, AlertTriangle,
 } from 'lucide-react';
 import { useApi, useDebounced } from '../lib/hooks.js';
 import { api } from '../lib/api.js';
@@ -529,7 +529,40 @@ function Json({ value }) {
   );
 }
 
+/** Main admin: delete activity history (all of it, or only old entries), confirmed with the password. */
+function PurgeAudit({ onClose, onDone }) {
+  const toast = useToast();
+  const [keep, setKeep] = useState('0');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const go = async () => {
+    setBusy(true); setErr('');
+    try { const r = await api.post('/audit/purge', { keep_days: Number(keep), password }); toast.success(r.message); onDone(); onClose(); } catch (e) { setErr(e.message); } finally { setBusy(false); }
+  };
+  return (
+    <Modal open onClose={onClose} title="מחיקת היסטוריית פעילות"
+      footer={<><Button onClick={onClose}>ביטול</Button><Button variant="danger" icon={Trash2} loading={busy} disabled={!password} onClick={go}>מחיקה</Button></>}>
+      <div className="grid">
+        {err && <div className="alert tone-danger">{err}</div>}
+        <Field label="מה למחוק?">
+          <Select value={keep} onChange={(e) => setKeep(e.target.value)}>
+            <option value="0">את כל ההיסטוריה</option>
+            <option value="30">רק פעולות ישנות מ-30 יום</option>
+            <option value="90">רק פעולות ישנות מ-3 חודשים</option>
+            <option value="365">רק פעולות ישנות משנה</option>
+          </Select>
+        </Field>
+        <div className="alert tone-warning"><AlertTriangle size={18} /><span>לא ניתן לשחזר את ההיסטוריה אחרי המחיקה. ביומן תישאר רשומה אחת שמציינת מי מחק ומתי. ליתר ביטחון אפשר להוריד קודם גיבוי (הגדרות ← גיבוי).</span></div>
+        <Field label="הסיסמה שלך (לאישור)"><Input type="password" autoComplete="current-password" value={password} onChange={(e) => setPassword(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && password && go()} /></Field>
+      </div>
+    </Modal>
+  );
+}
+
 function Audit() {
+  const { user } = useAuth();
+  const [purge, setPurge] = useState(false);
   const [search, setSearch] = useState('');
   const [entity, setEntity] = useState('');
   const [page, setPage] = useState(1);
@@ -538,14 +571,16 @@ function Audit() {
   useEffect(() => setPage(1), [q, entity]);
   const { data, loading, error, reload } = useApi('/audit', { search: q, entity_type: entity, page });
   return (
-    <Card title="יומן פעולות" icon={History} pad={false}>
+    <Card title="יומן פעולות" icon={History} pad={false}
+      actions={user.role === 'admin' && <Button size="sm" variant="ghost" icon={Trash2} onClick={() => setPurge(true)}>מחיקת היסטוריה</Button>}>
+      {purge && <PurgeAudit onClose={() => setPurge(false)} onDone={() => reload()} />}
       <div className="toolbar" style={{ padding: '14px 16px 0' }}>
         <div className="input-icon"><Search size={17} /><Input placeholder="חיפוש בפעולות..." value={search} onChange={(e) => setSearch(e.target.value)} /></div>
         <Select value={entity} onChange={(e) => setEntity(e.target.value)}>
           <option value="">כל הישויות</option>
           {[['shift', 'משמרות'], ['employee', 'עובדים'], ['request', 'בקשות'], ['task', 'משימות'], ['user', 'משתמשים'], ['settings', 'הגדרות'], ['role', 'הרשאות'], ['report', 'דוחות'], ['incident', 'אירועים']].map(([k, l]) => <option key={k} value={k}>{l}</option>)}
         </Select>
-        <span className="subtle flex"><Lock size={14} />היומן לקריאה בלבד ואינו ניתן לשינוי</span>
+        <span className="subtle flex"><Lock size={14} />אי אפשר לערוך את היומן. רק מנהל ראשי יכול למחוק אותו</span>
       </div>
       {error ? <ErrorState error={error} onRetry={reload} /> : loading && !data ? <SkeletonRows rows={8} /> : !data.logs.length ? <EmptyState icon={History} title="לא נמצאו פעולות" /> : (
         <>
