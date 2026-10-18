@@ -7,7 +7,7 @@ import { validate, z, zText, zOptText, zEmail, zPassword, zOptId, paramId } from
 import { requirePerm } from '../middleware/auth.js';
 import { audit } from '../services/audit.js';
 import {
-  PERMISSIONS, permissionsForRole, permissionsForUser, setRolePermissions, setUserPermissions, userOverrides,
+  PERMISSIONS, permissionsForRole, permissionsForUser, setRolePermissions, setUserPermissions, userOverrides, clearPermissionCache,
 } from '../services/permissions.js';
 import { getSetting, loadSettings, updateSettings, DEFAULT_SETTINGS, SECRET_SETTINGS } from '../services/settings.js';
 
@@ -134,22 +134,95 @@ router.put('/settings', requirePerm('settings.manage'), ah((req, res) => {
   res.json({ settings: publicSettings(), message: 'ההגדרות נשמרו בהצלחה' });
 }));
 
-// =========================== permissions ===========================
+// =========================== roles & permissions ===========================
+const BUILT_IN_ROLES = ['admin', 'shift_manager', 'employee'];
+const onlyMainAdmin = (req) => { if (req.user.role !== 'admin') throw forbidden('רק מנהל ראשי יכול לנהל תפקידים והרשאות'); };
+const roleRow = (key) => getDb().prepare('SELECT * FROM roles WHERE key = ?').get(key);
+
 router.get('/permissions', requirePerm('users.manage'), (req, res) => {
-  const roles = getDb().prepare('SELECT key, name FROM roles ORDER BY id').all();
+  const roles = getDb().prepare('SELECT r.key, r.name, r.description, (SELECT COUNT(*) FROM users u WHERE u.role_id = r.id) AS users FROM roles r ORDER BY r.id').all();
   res.json({
     catalog: Object.entries(PERMISSIONS).map(([key, label]) => ({ key, label })),
-    roles: roles.map((r) => ({ ...r, locked: r.key === 'admin', permissions: [...permissionsForRole(r.key)] })),
+    can_edit: req.user.role === 'admin',
+    roles: roles.map((r) => ({ ...r, locked: r.key === 'admin', custom: !BUILT_IN_ROLES.includes(r.key), permissions: [...permissionsForRole(r.key)] })),
   });
 });
 
+const roleSchema = z.object({
+  name: zText(40),
+  description: zOptText(200),
+  permissions: z.array(z.enum(Object.keys(PERMISSIONS))).optional(),
+});
+
+function checkRoleName(name, exceptKey = '') {
+  if (getDb().prepare('SELECT 1 FROM roles WHERE name = ? AND key != ?').get(name, exceptKey)) throw conflict('כבר יש תפקיד בשם הזה', { fields: { name: 'השם תפוס' } });
+}
+
+router.post('/roles', requirePerm('users.manage'), ah((req, res) => {
+  onlyMainAdmin(req);
+  const d = validate(roleSchema, req.body);
+  checkRoleName(d.name);
+  const db = getDb();
+  if (db.prepare('SELECT COUNT(*) c FROM roles').get().c >= 30) throw badRequest('אפשר להגדיר עד 30 תפקידים');
+  const key = `custom_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`;
+  db.prepare('INSERT INTO roles (key, name, description) VALUES (?, ?, ?)').run(key, d.name, d.description);
+  setRolePermissions(key, d.permissions || []);
+  audit(req, { action: 'role.create', entityType: 'role', description: `${req.user.display_name} יצר/ה תפקיד חדש: ${d.name}`, newValue: { name: d.name, permissions: (d.permissions || []).map((p) => PERMISSIONS[p]) } });
+  res.status(201).json({ key, message: `התפקיד "${d.name}" נוצר` });
+}));
+
+router.put('/roles/:key', requirePerm('users.manage'), ah((req, res) => {
+  onlyMainAdmin(req);
+  const before = roleRow(req.params.key);
+  if (!before) throw notFound('התפקיד לא נמצא');
+  const d = validate(roleSchema, req.body);
+  checkRoleName(d.name, before.key);
+  const oldPerms = [...permissionsForRole(before.key)];
+  getDb().prepare('UPDATE roles SET name = ?, description = ? WHERE key = ?').run(d.name, d.description, before.key);
+  if (d.permissions && before.key !== 'admin') setRolePermissions(before.key, d.permissions); // the main admin always has everything
+  audit(req, {
+    action: 'role.update', entityType: 'role', description: `${req.user.display_name} עדכן/ה את התפקיד ${d.name}`,
+    oldValue: { name: before.name, permissions: oldPerms.map((p) => PERMISSIONS[p]) },
+    newValue: { name: d.name, permissions: [...permissionsForRole(before.key)].map((p) => PERMISSIONS[p]) },
+  });
+  res.json({ message: 'התפקיד עודכן' });
+}));
+
+router.delete('/roles/:key', requirePerm('users.manage'), ah((req, res) => {
+  onlyMainAdmin(req);
+  const role = roleRow(req.params.key);
+  if (!role) throw notFound('התפקיד לא נמצא');
+  if (BUILT_IN_ROLES.includes(role.key)) throw forbidden('לא ניתן למחוק תפקיד מובנה');
+  const db = getDb();
+  const count = db.prepare('SELECT COUNT(*) c FROM users WHERE role_id = ?').get(role.id).c;
+  let target = null;
+  if (count) {
+    const moveTo = String(req.query.move_to || '');
+    target = moveTo && moveTo !== role.key ? roleRow(moveTo) : null;
+    if (!target || target.key === 'admin') throw conflict(`ל-${count} משתמשים יש את התפקיד הזה. בחרו לאיזה תפקיד להעביר אותם.`, { users: count });
+  }
+  db.transaction(() => {
+    if (target) {
+      db.prepare('UPDATE users SET role_id = ? WHERE role_id = ?').run(target.id, role.id);
+      db.prepare('DELETE FROM sessions WHERE user_id IN (SELECT id FROM users WHERE role_id = ?)').run(target.id);
+    }
+    db.prepare('DELETE FROM roles WHERE id = ?').run(role.id);
+  })();
+  clearPermissionCache();
+  audit(req, { action: 'role.delete', entityType: 'role', description: `${req.user.display_name} מחק/ה את התפקיד ${role.name}${target ? ` (${count} משתמשים הועברו ל"${target.name}")` : ''}` });
+  res.json({ message: 'התפקיד נמחק' });
+}));
+
+// kept for older clients: permissions of one role
 router.put('/permissions/:role', requirePerm('users.manage'), ah((req, res) => {
-  const role = req.params.role;
-  if (!['shift_manager', 'employee'].includes(role)) throw forbidden('לא ניתן לשנות את הרשאות המנהל הראשי');
+  onlyMainAdmin(req);
+  const role = roleRow(req.params.role);
+  if (!role) throw notFound('התפקיד לא נמצא');
+  if (role.key === 'admin') throw forbidden('לא ניתן לשנות את הרשאות המנהל הראשי');
   const { permissions } = validate(z.object({ permissions: z.array(z.enum(Object.keys(PERMISSIONS))) }), req.body);
-  const before = [...permissionsForRole(role)];
-  setRolePermissions(role, permissions);
-  audit(req, { action: 'permissions.update', entityType: 'role', description: `${req.user.display_name} עדכן/ה הרשאות לתפקיד ${role}`, oldValue: before, newValue: permissions });
+  const before = [...permissionsForRole(role.key)];
+  setRolePermissions(role.key, permissions);
+  audit(req, { action: 'permissions.update', entityType: 'role', description: `${req.user.display_name} עדכן/ה הרשאות לתפקיד ${role.name}`, oldValue: before, newValue: permissions });
   res.json({ message: 'ההרשאות עודכנו' });
 }));
 
@@ -200,11 +273,17 @@ const userSchema = z.object({
   username: z.string().trim().min(3, 'לפחות 3 תווים').max(40).regex(/^[A-Za-z0-9._-]+$/, 'אותיות באנגלית, ספרות ו-._- בלבד'),
   email: zEmail,
   display_name: zText(80),
-  role: z.enum(['admin', 'shift_manager', 'employee']),
+  role: z.string().trim().min(1, 'יש לבחור תפקיד').max(40),
   employee_id: zOptId,
   location_id: zOptId, // branch manager: sees and manages only this branch (empty = all branches)
   is_active: z.boolean().default(true),
 });
+
+function roleIdFor(key) {
+  const r = getDb().prepare('SELECT id FROM roles WHERE key = ?').get(key);
+  if (!r) throw badRequest('התפקיד שנבחר לא קיים', { fields: { role: 'תפקיד לא קיים' } });
+  return r.id;
+}
 
 /** Only a main admin may create, edit or manage main-admin accounts (protects against delegated users.manage). */
 function guardAdminTarget(req, target, newRole) {
@@ -228,7 +307,7 @@ router.post('/users', requirePerm('users.manage'), ah(async (req, res) => {
   guardAdminTarget(req, null, data.role);
   checkUserUnique(data);
   const db = getDb();
-  const roleId = db.prepare('SELECT id FROM roles WHERE key = ?').get(data.role).id;
+  const roleId = roleIdFor(data.role);
   const hash = await bcrypt.hash(data.password, 12);
   if (req.user.location_id) data.location_id = req.user.location_id; // a branch manager can only create users in their branch
   const id = db.prepare('INSERT INTO users (username, email, display_name, password_hash, role_id, employee_id, is_active, location_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
@@ -247,7 +326,7 @@ router.put('/users/:id', requirePerm('users.manage'), ah((req, res) => {
   if (id === req.user.id && (data.role !== 'admin' || !data.is_active)) throw forbidden('לא ניתן להסיר הרשאות ניהול או להשבית את המשתמש שלך');
   checkUserUnique(data, id);
   const db = getDb();
-  const roleId = db.prepare('SELECT id FROM roles WHERE key = ?').get(data.role).id;
+  const roleId = roleIdFor(data.role);
   if (req.user.location_id) data.location_id = req.user.location_id;
   if (data.role === 'admin') data.location_id = null; // a main admin always sees every branch
   db.prepare("UPDATE users SET username=?, email=?, display_name=?, role_id=?, employee_id=?, is_active=?, location_id=?, updated_at=datetime('now') WHERE id=?")

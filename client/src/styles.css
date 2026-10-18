@@ -694,3 +694,5 @@ td.ltr { display: table-cell; text-align: start; }
 .guide .steps { margin-top: 10px; line-height: 1.6; }
 .guide code { overflow-wrap: anywhere; }
 .device-code-box { justify-self: start; display: inline-flex; align-items: center; gap: 10px; font-size: 1.6rem; font-weight: 800; letter-spacing: .12em; padding: 10px 18px; border-radius: 12px; border: 2px dashed var(--primary); background: var(--primary-soft); color: var(--primary-text); cursor: pointer; font-family: ui-monospace, monospace; }
+.perm-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
+.role-row .kpi-icon { width: 36px; height: 36px; flex: none; }

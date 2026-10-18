@@ -7,7 +7,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS roles (
   id          INTEGER PRIMARY KEY,
-  key         TEXT NOT NULL UNIQUE CHECK (key IN ('admin','shift_manager','employee')),
+  key         TEXT NOT NULL UNIQUE,              -- admin / shift_manager / employee, or custom_xxx for roles the business adds
   name        TEXT NOT NULL,
   description TEXT
 );
