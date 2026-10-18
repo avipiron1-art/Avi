@@ -23,6 +23,19 @@ export function AuthProvider({ children }) {
     refresh();
   }, [refresh]);
 
+  // Permission / role changes made by an admin reach an app that is already open:
+  // re-check when the app comes back to the foreground and every 2 minutes.
+  useEffect(() => {
+    const again = () => {
+      if (document.visibilityState !== 'visible') return;
+      api.get('/auth/me').then(({ user: u }) => setUser((cur) => (cur && JSON.stringify(cur) === JSON.stringify(u) ? cur : u))).catch(() => {});
+    };
+    const t = setInterval(again, 120000);
+    document.addEventListener('visibilitychange', again);
+    window.addEventListener('focus', again);
+    return () => { clearInterval(t); document.removeEventListener('visibilitychange', again); window.removeEventListener('focus', again); };
+  }, []);
+
   /** Returns { mfa_required, mfa_token } when a code from the authenticator app is needed. */
   const login = async (identifier, password, remember) => {
     const r = await api.post('/auth/login', { identifier, password, remember });

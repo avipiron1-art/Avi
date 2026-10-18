@@ -329,6 +329,23 @@ function fitResponsibility(req, data) {
   if (sc.dep && !data.department_id) data.department_id = sc.dep;
 }
 
+/**
+ * A role that works on a branch / department needs one, or the person would see nobody.
+ * Taken from the user, else from their employee card; refuse to save without it.
+ */
+function requireResponsibility(data) {
+  const db = getDb();
+  const scope = db.prepare('SELECT scope FROM roles WHERE key = ?').get(data.role)?.scope;
+  if (!scope || !db.prepare('SELECT 1 FROM locations LIMIT 1').get()) return;
+  const emp = data.employee_id ? db.prepare('SELECT location_id, department_id FROM employees WHERE id = ?').get(data.employee_id) : null;
+  const loc = data.location_id || emp?.location_id;
+  const dep = data.department_id || emp?.department_id;
+  if (scope === 'branch' && !loc) throw badRequest('לתפקיד הזה צריך לבחור את הסניף שבאחריותו (אין סניף בכרטיס העובד)', { fields: { location_id: 'יש לבחור סניף' } });
+  if (scope === 'branches' && !data.location_ids.length && !loc) throw badRequest('יש לבחור לפחות סניף אחד שבאחריותו', { fields: { location_ids: 'יש לבחור סניפים' } });
+  if (scope === 'department' && !loc) throw badRequest('לתפקיד הזה צריך לבחור סניף', { fields: { location_id: 'יש לבחור סניף' } });
+  if ((scope === 'department' || scope === 'department_all') && !dep) throw badRequest('לתפקיד הזה צריך לבחור את המחלקה שבאחריותו', { fields: { department_id: 'יש לבחור מחלקה' } });
+}
+
 function saveUserLocations(userId, ids) {
   const db = getDb();
   const valid = new Set(db.prepare('SELECT id FROM locations').all().map((l) => l.id));
@@ -355,6 +372,7 @@ router.post('/users', requirePerm('users.manage'), ah(async (req, res) => {
   const roleId = roleIdFor(data.role);
   const hash = await bcrypt.hash(data.password, 12);
   fitResponsibility(req, data);
+  requireResponsibility(data);
   if (data.employee_id && !req.user.scope.all && !employeeInScopeFn(req.user.scope, data.employee_id)) throw forbidden('העובד שנבחר לא באחריותך');
   const id = db.prepare('INSERT INTO users (username, email, display_name, password_hash, role_id, employee_id, is_active, location_id, department_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
     .run(data.username, data.email, data.display_name, hash, roleId, data.employee_id, data.is_active ? 1 : 0, data.location_id, data.department_id).lastInsertRowid;
@@ -375,6 +393,7 @@ router.put('/users/:id', requirePerm('users.manage'), ah((req, res) => {
   const db = getDb();
   const roleId = roleIdFor(data.role);
   fitResponsibility(req, data);
+  requireResponsibility(data);
   if (data.employee_id && data.employee_id !== before.employee_id && !req.user.scope.all && !employeeInScopeFn(req.user.scope, data.employee_id)) throw forbidden('העובד שנבחר לא באחריותך');
   db.prepare("UPDATE users SET username=?, email=?, display_name=?, role_id=?, employee_id=?, is_active=?, location_id=?, department_id=?, updated_at=datetime('now') WHERE id=?")
     .run(data.username, data.email, data.display_name, roleId, data.employee_id, data.is_active ? 1 : 0, data.location_id, data.department_id, id);

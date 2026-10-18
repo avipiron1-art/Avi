@@ -352,7 +352,7 @@ function UserForm({ user: u, onClose, onSaved }) {
             </Field>
           )}
           {roleScope === 'branches' && (
-            <Field label="הסניפים שבאחריותו">
+            <Field label="הסניפים שבאחריותו" error={errors.location_ids}>
               <div className="chips-select">
                 {meta.locations.map((l) => (
                   <button key={l.id} type="button" className={`chip-toggle ${v.location_ids.includes(l.id) ? 'on' : ''}`} aria-pressed={v.location_ids.includes(l.id)} onClick={() => toggleLoc(l.id)}>{l.name}</button>

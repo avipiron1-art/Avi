@@ -941,7 +941,12 @@ test('custom roles: main admin creates, edits and deletes a role with its own pe
   const uid = db.prepare("SELECT id FROM users WHERE username = 'cashier1'").get().id;
   const u = (await admin.get('/users')).body.users.find((x) => x.id === uid);
   assert.equal((await admin.put(`/users/${uid}`, { ...u, role: 'no_such_role', is_active: true })).status, 400);
-  assert.equal((await admin.put(`/users/${uid}`, { ...u, role: r.body.key, is_active: true })).status, 200);
+  // the role works on a branch: saving without one is refused (the person would see nobody)
+  const noBranch = await admin.put(`/users/${uid}`, { ...u, role: r.body.key, is_active: true });
+  assert.equal(noBranch.status, 400);
+  assert.ok(noBranch.body.fields.location_id);
+  const firstLoc = db.prepare('SELECT id FROM locations ORDER BY id LIMIT 1').get().id;
+  assert.equal((await admin.put(`/users/${uid}`, { ...u, role: r.body.key, location_id: firstLoc, is_active: true })).status, 200);
   const c = await login('cashier1', 'Employee1234');
   assert.equal((await c.get(`/reports?from=2026-01-01&to=2026-01-31`)).status, 200);
   assert.equal((await c.get('/employees')).status, 403);
