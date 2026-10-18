@@ -5,6 +5,7 @@ import { validate, z, zText, zOptText, zOptId, zDate, paramId } from '../lib/val
 import { requirePerm } from '../middleware/auth.js';
 import { audit, diff } from '../services/audit.js';
 import { notifyEmployee, notifyUser } from '../services/notify.js';
+import { employeeInScope, scopeWhere } from '../services/scope.js';
 
 const router = Router();
 export const PRIORITY_LABEL = { low: 'נמוכה', normal: 'רגילה', high: 'גבוהה', urgent: 'דחופה' };
@@ -24,6 +25,16 @@ const taskSchema = z.object({
   status: z.enum(['new', 'in_progress', 'done', 'cancelled']).default('new'),
 });
 
+/** Tasks a manager sees: assigned to people in their scope, or created by them. */
+const taskScope = (req) => `(t.created_by = ${Number(req.user.id)} OR (e.id IS NOT NULL ${scopeWhere(req.user.scope, { e: 'e' })}))`;
+function assertTaskInScope(req, id) {
+  if (req.user.scope.all) return;
+  if (!getDb().prepare(`SELECT 1 FROM tasks t ${JOINS} WHERE t.id = ? AND ${taskScope(req)}`).get(id)) throw forbidden('המשימה לא באחריותך');
+}
+function assertAssignee(req, assigneeId) {
+  if (assigneeId && !employeeInScope(req.user.scope, assigneeId)) throw forbidden('אפשר להקצות משימה רק לעובד שבאחריותך', { fields: { assignee_id: 'לא באחריותך' } });
+}
+
 router.get('/', (req, res) => {
   const { status, priority, assignee_id, search } = req.query;
   const where = [];
@@ -31,7 +42,10 @@ router.get('/', (req, res) => {
   if (!req.can('tasks.manage')) {
     if (!req.user.employee_id) return res.json({ tasks: [] });
     where.push('t.assignee_id = @own'); p.own = req.user.employee_id;
-  } else if (assignee_id) { where.push('t.assignee_id = @assignee_id'); p.assignee_id = Number(assignee_id); }
+  } else {
+    if (assignee_id) { where.push('t.assignee_id = @assignee_id'); p.assignee_id = Number(assignee_id); }
+    if (!req.user.scope.all) where.push(taskScope(req));
+  }
   if (status && TASK_STATUS_LABEL[status]) { where.push('t.status = @status'); p.status = status; }
   if (status === 'open') where.push("t.status IN ('new','in_progress')");
   if (priority && PRIORITY_LABEL[priority]) { where.push('t.priority = @priority'); p.priority = priority; }
@@ -47,6 +61,7 @@ router.get('/', (req, res) => {
 
 router.post('/', requirePerm('tasks.manage'), ah((req, res) => {
   const data = validate(taskSchema, req.body);
+  assertAssignee(req, data.assignee_id);
   const id = getDb().prepare(
     `INSERT INTO tasks (title, description, assignee_id, created_by, due_date, priority, status, completed_at)
      VALUES (@title, @description, @assignee_id, @created_by, @due_date, @priority, @status, CASE WHEN @status = 'done' THEN datetime('now') END)`,
@@ -61,7 +76,9 @@ router.put('/:id', requirePerm('tasks.manage'), ah((req, res) => {
   const id = paramId(req.params.id);
   const before = getTask(id);
   if (!before) throw notFound('המשימה לא נמצאה');
+  assertTaskInScope(req, id);
   const data = validate(taskSchema, req.body);
+  if (data.assignee_id !== before.assignee_id) assertAssignee(req, data.assignee_id);
   getDb().prepare(
     `UPDATE tasks SET title=@title, description=@description, assignee_id=@assignee_id, due_date=@due_date, priority=@priority,
      status=@status, due_notified = CASE WHEN due_date IS NOT @due_date THEN 0 ELSE due_notified END,
@@ -84,6 +101,7 @@ router.patch('/:id/status', ah((req, res) => {
   if (!t) throw notFound('המשימה לא נמצאה');
   const isOwner = req.user.employee_id && t.assignee_id === req.user.employee_id;
   if (!req.can('tasks.manage') && !isOwner) throw forbidden();
+  if (!isOwner) assertTaskInScope(req, id);
   const { status } = validate(z.object({ status: z.enum(['new', 'in_progress', 'done', 'cancelled']) }), req.body);
   if (!req.can('tasks.manage') && status === 'cancelled') throw forbidden('רק מנהל יכול לבטל משימה');
   getDb().prepare(
@@ -104,6 +122,7 @@ router.delete('/:id', requirePerm('tasks.manage'), ah((req, res) => {
   const id = paramId(req.params.id);
   const t = getTask(id);
   if (!t) throw notFound('המשימה לא נמצאה');
+  assertTaskInScope(req, id);
   getDb().prepare('DELETE FROM tasks WHERE id = ?').run(id);
   audit(req, { action: 'task.delete', entityType: 'task', entityId: id, description: `${req.user.display_name} מחק/ה את המשימה "${t.title}"`, oldValue: t });
   res.json({ ok: true, message: 'המשימה נמחקה' });

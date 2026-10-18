@@ -34,11 +34,12 @@ export function seed(db = getDb(), { demo = true, adminPassword = DEMO_PASSWORDS
     loadSettings();
 
     const roles = [
-      ['admin', 'מנהל ראשי', 'גישה מלאה לכל המערכת'],
-      ['shift_manager', 'מנהל משמרת', 'ניהול נוכחות, משימות ואירועים במשמרת'],
-      ['employee', 'עובד', 'צפייה במשמרות, שעות, משימות והגשת בקשות'],
+      ['admin', 'מנהל ראשי', 'גישה מלאה לכל המערכת', 'all'],
+      ['shift_manager', 'מנהל משמרת', 'ניהול נוכחות, משימות ואירועים בסניף שלו', 'branch'],
+      ['employee', 'עובד', 'צפייה במשמרות, שעות, משימות והגשת בקשות', 'self'],
+      ['shift_lead', 'אחמ"ש', 'הרשאות שפועלות רק במשמרות שבהן הוא משובץ כאחמ"ש', 'lead'],
     ];
-    const insRole = db.prepare('INSERT INTO roles (key, name, description) VALUES (?, ?, ?)');
+    const insRole = db.prepare('INSERT INTO roles (key, name, description, scope) VALUES (?, ?, ?, ?)');
     const roleId = {};
     for (const r of roles) roleId[r[0]] = insRole.run(...r).lastInsertRowid;
     const insPerm = db.prepare('INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)');
@@ -264,6 +265,8 @@ export function seed(db = getDb(), { demo = true, adminPassword = DEMO_PASSWORDS
     // ---------- staffing & shift leads (first-come picks demo) ----------
     db.prepare("UPDATE shift_types SET required_workers = 4, required_leads = 1 WHERE is_active = 1").run();
     for (const e of emps.filter((x) => x.role === 'shift_manager' || ['chef'].includes(x.posKey))) db.prepare('UPDATE employees SET can_lead = 1 WHERE id = ?').run(e.id);
+    // a chef who leads shifts gets the shift-lead role (rights only during the shifts they lead)
+    for (const e of emps.filter((x) => x.role === 'employee' && x.posKey === 'chef' && x.name.startsWith('יעל'))) db.prepare('UPDATE users SET role_id = ? WHERE id = ?').run(roleId.shift_lead, e.userId);
 
     // ---------- shift preferences for next week (scheduling board demo) ----------
     const types = db.prepare('SELECT id FROM shift_types WHERE is_active = 1 ORDER BY sort_order, id').all();

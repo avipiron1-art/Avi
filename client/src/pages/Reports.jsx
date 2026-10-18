@@ -41,11 +41,12 @@ function PayrollExport() {
 }
 
 export default function Reports() {
-  const { meta, can } = useAuth();
+  const { meta, can, user } = useAuth();
   const toast = useToast();
+  const branchOptions = user?.scope && !user.scope.all ? user.scope.branches || [] : meta.locations;
   const [preset, setPreset] = useState('month');
   const [range, setRange] = useState(PRESETS.month());
-  const [filters, setFilters] = useState({ employee_id: '', department_id: '', position_id: '' });
+  const [filters, setFilters] = useState({ employee_id: '', department_id: '', position_id: '', location_id: '' });
   const [sort, setSort] = useState({ field: 'hours', dir: 'desc' });
   const [exporting, setExporting] = useState(null);
   const query = { ...range, ...filters };
@@ -94,6 +95,7 @@ export default function Reports() {
           <Field label="מתאריך"><Input type="date" value={range.from} onChange={(e) => { setPreset('custom'); setRange((r) => ({ ...r, from: e.target.value })); }} /></Field>
           <Field label="עד תאריך"><Input type="date" value={range.to} min={range.from} onChange={(e) => { setPreset('custom'); setRange((r) => ({ ...r, to: e.target.value })); }} /></Field>
           <Field label="עובד"><Select value={filters.employee_id} onChange={setF('employee_id')}><option value="">כל העובדים</option>{meta.employees.map((e) => <option key={e.id} value={e.id}>{e.name}</option>)}</Select></Field>
+          {branchOptions.length > 1 && <Field label="סניף"><Select value={filters.location_id} onChange={setF('location_id')}><option value="">כל הסניפים{user?.scope && !user.scope.all ? ' שבאחריותי' : ''}</option>{branchOptions.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select></Field>}
           <Field label="מחלקה"><Select value={filters.department_id} onChange={setF('department_id')}><option value="">כל המחלקות</option>{meta.departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}</Select></Field>
           <Field label="תפקיד"><Select value={filters.position_id} onChange={setF('position_id')}><option value="">כל התפקידים</option>{meta.positions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select></Field>
         </div>

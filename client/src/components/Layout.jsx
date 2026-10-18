@@ -104,7 +104,7 @@ export default function Layout() {
             <Avatar name={user.display_name} size={34} />
             <div style={{ minWidth: 0, flex: 1 }}>
               <div className="person-name">{user.display_name}</div>
-              <div className="person-sub">{user.role_name}</div>
+              <div className="person-sub" title={user.scope?.label}>{user.role_name}{user.scope && !user.scope.all && user.scope.type !== 'self' ? ` · ${user.scope.label}` : ''}</div>
             </div>
             <IconButton icon={LogOut} label="התנתקות" onClick={onLogout} small />
           </div>

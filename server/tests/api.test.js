@@ -284,7 +284,7 @@ test('empty install creates only roles, permissions and an admin with the chosen
   seed(db, { demo: false, adminPassword: 'Chosen123' });
   assert.equal(db.prepare('SELECT COUNT(*) c FROM employees').get().c, 0);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM shifts').get().c, 0);
-  assert.equal(db.prepare('SELECT COUNT(*) c FROM roles').get().c, 3);
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM roles').get().c, 4); // admin, shift manager, employee, shift lead
   const admin = db.prepare("SELECT u.password_hash, r.key FROM users u JOIN roles r ON r.id = u.role_id").all();
   assert.equal(admin.length, 1);
   assert.equal(admin[0].key, 'admin');
@@ -340,13 +340,17 @@ test('employees submit preferences, manager assigns with a shift lead and publis
   await noa.put('/schedule/my', { week_start: ws, prefs: [{ date: ws, shift_type_id: morning.id, preference: 'available' }] });
 
   const admin = await login('admin', 'Admin1234');
-  const board = (await admin.get(`/schedule/board?week=${ws}`)).body;
   const yId = (await yossi.get('/auth/me')).body.user.employee_id;
   const nId = (await noa.get('/auth/me')).body.user.employee_id;
+  const loc = getDb().prepare('SELECT location_id FROM employees WHERE id = ?').get(yId).location_id;
+  // noa's home branch is another one, but she also works in yossi's branch (extra branch) → she's on its board
+  getDb().prepare('INSERT OR IGNORE INTO employee_locations (employee_id, location_id) VALUES (?, ?)').run(nId, loc);
+  const board = (await admin.get(`/schedule/board?week=${ws}&location_id=${loc}`)).body;
+  assert.equal(board.location_id, loc);
   assert.ok(board.prefs.some((p) => p.employee_id === yId && p.preference === 'preferred'));
   assert.ok(board.employees.find((e) => e.id === yId).submitted_at);
 
-  const twoLeads = await admin.put('/schedule/board', { week_start: ws, assignments: [
+  const twoLeads = await admin.put('/schedule/board', { week_start: ws, location_id: loc, assignments: [
     { date: ws, shift_type_id: morning.id, employee_id: yId, is_lead: true },
     { date: ws, shift_type_id: morning.id, employee_id: nId, is_lead: true },
   ] });
@@ -356,7 +360,7 @@ test('employees submit preferences, manager assigns with a shift lead and publis
     { date: ws, shift_type_id: morning.id, employee_id: yId, is_lead: true },
     { date: ws, shift_type_id: morning.id, employee_id: nId, is_lead: false },
   ];
-  const pub = await admin.post('/schedule/publish', { week_start: ws, assignments });
+  const pub = await admin.post('/schedule/publish', { week_start: ws, location_id: loc, assignments });
   assert.equal(pub.status, 200);
   assert.equal(pub.body.stats.created + pub.body.stats.updated, 2, "a matching manual shift is linked, not duplicated");
   assert.equal(pub.body.state.status, 'published');
@@ -379,11 +383,11 @@ test('employees submit preferences, manager assigns with a shift lead and publis
   assert.ok((await yossi.get('/notifications')).body.notifications.some((n) => n.title.includes('פורסם')));
 
   // re-publish without noa: her shift is cancelled, yossi's unchanged
-  const again = await admin.post('/schedule/publish', { week_start: ws, assignments: [assignments[0]] });
+  const again = await admin.post('/schedule/publish', { week_start: ws, location_id: loc, assignments: [assignments[0]] });
   assert.equal(again.body.stats.cancelled, 1);
   assert.equal(again.body.stats.created, 0);
   assert.equal(again.body.stats.updated, 0);
-  const view2 = (await noa.get(`/schedule/published?week=${ws}`)).body;
+  const view2 = (await noa.get(`/schedule/published?week=${ws}&location_id=${loc}`)).body; // her extra branch
   const ours2 = view2.days[0].shifts.filter((x) => x.name === morning.name).flatMap((x) => x.workers).filter((w) => [yId, nId].includes(w.employee_id));
   assert.deepEqual(ours2.map((w) => w.employee_id), [yId]);
 });
@@ -523,7 +527,7 @@ test('first-come shift claims: capacity, shift-lead slots, manager approval keep
   await admin.put(`/schedule/shift-types/${t.id}`, { ...t, is_active: true, required_workers: 2, required_leads: 1 });
   const d = new Date(); d.setUTCDate(d.getUTCDate() + 7 - d.getUTCDay() + 35); // a Sunday ~6 weeks ahead
   const date = d.toISOString().slice(0, 10);
-  const users = { a: await login('shira', 'Employee1234'), b: await login('omer', 'Employee1234'), c: await login('daniel', 'Employee1234') };
+  const users = { a: await login('shira', 'Employee1234'), b: await login('daniel', 'Employee1234'), c: await login('aviv', 'Employee1234') }; // one branch
   const ids = {};
   for (const [k, u] of Object.entries(users)) ids[k] = (await u.get('/auth/me')).body.user.employee_id;
 
@@ -531,7 +535,8 @@ test('first-come shift claims: capacity, shift-lead slots, manager approval keep
   assert.equal((await users.a.post('/schedule/claim', { date, shift_type_id: t.id, as_lead: true })).status, 400);
   const emp = (await admin.get(`/employees/${ids.a}`)).body.employee;
   await admin.put(`/employees/${ids.a}`, { ...emp, can_lead: true, avatar: undefined });
-  const managerLoaded = (await admin.get(`/schedule/board?week=${date}`)).body.loaded_at;
+  const loc = getDb().prepare('SELECT location_id FROM employees WHERE id = ?').get(ids.a).location_id;
+  const managerLoaded = (await admin.get(`/schedule/board?week=${date}&location_id=${loc}`)).body.loaded_at;
   assert.equal((await users.a.post('/schedule/claim', { date, shift_type_id: t.id, as_lead: true })).status, 201);
   assert.equal((await users.b.post('/schedule/claim', { date, shift_type_id: t.id })).status, 201);
   const full = await users.c.post('/schedule/claim', { date, shift_type_id: t.id });
@@ -543,24 +548,24 @@ test('first-come shift claims: capacity, shift-lead slots, manager approval keep
   assert.equal(open.taken_regular, 1);
 
   // manager saves a board loaded BEFORE the claims: claims are kept
-  await admin.put('/schedule/board', { week_start: date, assignments: [], loaded_at: managerLoaded });
-  const board = (await admin.get(`/schedule/board?week=${date}`)).body;
+  await admin.put('/schedule/board', { week_start: date, location_id: loc, assignments: [], loaded_at: managerLoaded });
+  const board = (await admin.get(`/schedule/board?week=${date}&location_id=${loc}`)).body;
   const claims = board.assignments.filter((a) => a.date === date && a.status === 'claimed');
   assert.equal(claims.length, 2, 'late claims survive an older board save');
 
-  // approve shira, reject omer
+  // approve shira, reject daniel
   const approved = claims.filter((c) => c.employee_id === ids.a).map((c) => ({ ...c, is_lead: !!c.is_lead, status: 'approved' }));
-  await admin.put('/schedule/board', { week_start: date, assignments: approved, loaded_at: board.loaded_at });
+  await admin.put('/schedule/board', { week_start: date, location_id: loc, assignments: approved, loaded_at: board.loaded_at });
   const na = (await users.a.get('/notifications')).body.notifications;
   assert.ok(na.some((n) => n.title.includes('אושרה')));
   const nb = (await users.b.get('/notifications')).body.notifications;
   assert.ok(nb.some((n) => n.title.includes('לא אושרה')));
-  // a slot freed up -> daniel can claim now; cannot cancel an approved pick
+  // a slot freed up -> aviv can claim now; cannot cancel an approved pick
   assert.equal((await users.c.post('/schedule/claim', { date, shift_type_id: t.id })).status, 201);
   assert.equal((await users.a.del(`/schedule/claim?date=${date}&shift_type_id=${t.id}`)).status, 400);
   assert.equal((await users.c.del(`/schedule/claim?date=${date}&shift_type_id=${t.id}`)).status, 200);
   // publishing only creates shifts for approved picks
-  const pub = await admin.post('/schedule/publish', { week_start: date, assignments: approved });
+  const pub = await admin.post('/schedule/publish', { week_start: date, location_id: loc, assignments: approved });
   assert.equal(pub.status, 200);
   const shiftsA = (await users.a.get(`/shifts?from=${date}&to=${date}`)).body.shifts;
   assert.ok(shiftsA.some((s) => s.is_lead === 1));
@@ -570,7 +575,7 @@ test('first-come shift claims: capacity, shift-lead slots, manager approval keep
 test('shift swap board: offer, take, manager approves and the shift moves', async () => {
   const admin = await login('admin', 'Admin1234');
   const a = await login('shira', 'Employee1234');
-  const b = await login('omer', 'Employee1234');
+  const b = await login('daniel', 'Employee1234'); // same branch as shira
   const ida = (await a.get('/auth/me')).body.user.employee_id;
   const idb = (await b.get('/auth/me')).body.user.employee_id;
   const s = (await admin.post('/shifts', { employee_ids: [ida], date: '2031-07-07', start_time: '08:00', end_time: '14:00', force: true })).body.shifts[0];
@@ -743,35 +748,96 @@ test('two-step login with an authenticator code, recovery code, admin reset', as
   assert.equal((await fetch(`${base}/auth/passkeys/login/options`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 200);
 });
 
-test('branch manager sees only their branch; an on-duty shift lead gets attendance rights for their own shift', async () => {
+test('responsibility scopes: branch, several branches, department (in a branch / everywhere), shift lead; alerts follow scope', async () => {
   const { nowLocal, addMinutes } = await import('../lib/time.js');
   const db = getDb();
   const admin = await login('admin', 'Admin1234');
-  const locs = db.prepare('SELECT id FROM locations ORDER BY id LIMIT 2').all().map((l) => l.id);
-  assert.equal(locs.length, 2);
-  const smId = db.prepare("SELECT u.id FROM users u JOIN roles r ON r.id = u.role_id WHERE r.key = 'shift_manager' LIMIT 1").get().id;
-  const sm = (await admin.get('/users')).body.users.find((u) => u.id === smId);
-  assert.equal((await admin.put(`/users/${smId}`, { ...sm, location_id: locs[0], is_active: true })).status, 200);
-  const smUser = await login(sm.username, 'Manager1234');
-  const emps = (await smUser.get('/employees')).body.employees;
-  assert.ok(emps.length > 0);
-  assert.ok(emps.every((e) => e.location_id === locs[0]), 'only own branch employees');
-  const today = nowLocal().slice(0, 10);
-  const board = (await smUser.get(`/attendance?date=${today}`)).body.rows;
-  assert.ok(board.every((r) => (r.location_id ?? emps.find((e) => e.id === r.employee_id)?.location_id) === locs[0]));
-  await admin.put(`/users/${smId}`, { ...sm, location_id: null, is_active: true });
+  const [loc1, loc2] = db.prepare('SELECT id FROM locations ORDER BY id LIMIT 2').all().map((l) => l.id);
+  const hash = db.prepare("SELECT password_hash FROM users WHERE username = 'yossi'").get().password_hash;
+  const kitchen = db.prepare("SELECT id FROM departments WHERE name LIKE '%מטבח%'").get().id;
+  const roleOf = (key) => db.prepare('SELECT id FROM roles WHERE key = ?').get(key).id;
+  const mkUser = (username, roleKey, extra = {}) => {
+    db.prepare('INSERT INTO users (username, email, display_name, password_hash, role_id, location_id, department_id) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .run(username, `${username}@x.io`, username, hash, roleOf(roleKey), extra.location_id ?? null, extra.department_id ?? null);
+    return db.prepare('SELECT id FROM users WHERE username = ?').get(username).id;
+  };
+  const visible = async (u) => new Set((await u.get('/employees')).body.employees.map((e) => e.id));
+  const inLoc = (loc) => db.prepare("SELECT id FROM employees WHERE location_id = ? OR id IN (SELECT employee_id FROM employee_locations WHERE location_id = ?)").all(loc, loc).map((r) => r.id);
 
-  // shift lead on duty
+  // --- branch manager (built-in "shift manager" role = scope branch)
+  mkUser('branch.mgr', 'shift_manager', { location_id: loc1 });
+  const bm = await login('branch.mgr', 'Employee1234');
+  const seen = await visible(bm);
+  assert.ok(seen.size > 0);
+  assert.deepEqual([...seen].sort(), inLoc(loc1).sort(), 'exactly the people of branch 1');
+  const other = inLoc(loc2).find((id) => !inLoc(loc1).includes(id));
+  assert.equal((await bm.get(`/employees/${other}`)).status, 403);
+  assert.equal((await bm.post('/shifts', { employee_ids: [other], date: '2033-01-03', start_time: '08:00', end_time: '12:00' })).status, 403);
+  const today = nowLocal().slice(0, 10);
+  const board = (await bm.get(`/attendance?date=${today}`)).body.rows;
+  assert.ok(board.every((r) => (r.location_id ?? db.prepare('SELECT location_id FROM employees WHERE id = ?').get(r.employee_id).location_id) === loc1));
+  assert.equal((await bm.get('/auth/me')).body.user.scope.type, 'branch');
+
+  // a manager without a branch sees nobody (and the users list says so)
+  const noBranchId = mkUser('nobranch.mgr', 'shift_manager');
+  assert.equal((await visible(await login('nobranch.mgr', 'Employee1234'))).size, 0);
+  assert.equal((await admin.get('/users')).body.users.find((u) => u.id === noBranchId).scope_missing, 'branch');
+
+  // --- area manager: a role responsible for chosen branches
+  const area = await admin.post('/roles', { name: 'מנהל אזור', scope: 'branches', permissions: ['employees.view', 'shifts.view_all'] });
+  assert.equal(area.status, 201);
+  const areaUser = mkUser('area.mgr', area.body.key);
+  db.prepare('INSERT INTO user_locations (user_id, location_id) VALUES (?, ?), (?, ?)').run(areaUser, loc1, areaUser, loc2);
+  const am = await visible(await login('area.mgr', 'Employee1234'));
+  assert.ok(inLoc(loc1).every((id) => am.has(id)) && inLoc(loc2).every((id) => am.has(id)));
+
+  // --- department manager in a branch, and across all branches
+  const dep = await admin.post('/roles', { name: 'מנהל מחלקה', scope: 'department', permissions: ['employees.view', 'employees.manage', 'shifts.view_all', 'requests.review'] });
+  mkUser('kitchen.mgr', dep.body.key, { location_id: loc1, department_id: kitchen });
+  const km = await login('kitchen.mgr', 'Employee1234');
+  const kSeen = await visible(km);
+  const kitchenIn1 = db.prepare('SELECT id FROM employees WHERE department_id = ? AND location_id = ?').all(kitchen, loc1).map((r) => r.id);
+  assert.ok(kitchenIn1.length > 0);
+  assert.deepEqual([...kSeen].sort(), kitchenIn1.sort(), 'only the kitchen of branch 1');
+  const notKitchen = db.prepare('SELECT * FROM employees WHERE department_id != ? AND location_id = ? LIMIT 1').get(kitchen, loc1);
+  const empBody = (await admin.get(`/employees/${notKitchen.id}`)).body.employee;
+  assert.equal((await km.put(`/employees/${notKitchen.id}`, { ...empBody, avatar: undefined })).status, 403);
+  // a new employee created by the department manager lands in their department + branch
+  const created = await km.post('/employees', { employee_code: 'K-900', first_name: 'חדש', last_name: 'במטבח', start_date: '2026-01-01', status: 'active' });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.employee.department_id, kitchen);
+  assert.equal(created.body.employee.location_id, loc1);
+  const chain = await admin.post('/roles', { name: 'שף ראשי ברשת', scope: 'department_all', permissions: ['employees.view'] });
+  mkUser('head.chef', chain.body.key, { department_id: kitchen });
+  const hc = await visible(await login('head.chef', 'Employee1234'));
+  const allKitchen = db.prepare('SELECT id FROM employees WHERE department_id = ?').all(kitchen).map((r) => r.id);
+  assert.deepEqual([...hc].sort(), allKitchen.sort(), 'the kitchen in every branch');
+
+  // --- alerts follow responsibility: a request from a branch-2 employee does not reach the branch-1 manager
+  const bmUser = db.prepare("SELECT id FROM users WHERE username = 'branch.mgr'").get().id;
+  db.prepare("INSERT INTO role_permissions (role_id, permission) SELECT id, 'requests.review' FROM roles WHERE key = 'shift_manager' AND NOT EXISTS (SELECT 1 FROM role_permissions rp JOIN roles r ON r.id = rp.role_id WHERE r.key = 'shift_manager' AND rp.permission = 'requests.review')").run();
+  const { clearPermissionCache } = await import('../services/permissions.js');
+  clearPermissionCache();
+  const empUser = db.prepare('SELECT u.username FROM users u JOIN employees e ON e.id = u.employee_id JOIN roles r ON r.id = u.role_id WHERE e.location_id = ? AND r.key = \'employee\' LIMIT 1').get(loc2).username;
+  const before = db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND type = 'request_new'").get(bmUser).c;
+  await (await login(empUser, 'Employee1234')).post('/requests', { type: 'general', start_date: '2033-02-01', details: 'בדיקה' });
+  assert.equal(db.prepare("SELECT COUNT(*) c FROM notifications WHERE user_id = ? AND type = 'request_new'").get(bmUser).c, before, 'not my branch');
+  assert.ok(db.prepare("SELECT COUNT(*) c FROM notifications n JOIN users u ON u.id = n.user_id WHERE u.username = 'admin' AND n.type = 'request_new'").get().c > 0);
+
+  // --- shift lead: rights only during the shifts they lead, only for that shift's people
   const lead = await login('omer', 'Employee1234');
   const leadEmp = (await lead.get('/auth/me')).body.user.employee_id;
-  assert.equal((await lead.get(`/attendance?date=${today}`)).status, 403, 'not a lead right now');
+  db.prepare('UPDATE users SET role_id = ? WHERE employee_id = ?').run(roleOf('shift_lead'), leadEmp);
+  assert.equal((await lead.get(`/attendance?date=${today}`)).status, 403, 'not leading right now → no rights');
   const now = nowLocal();
   db.prepare("INSERT INTO shifts (employee_id, start_at, end_at, status, is_lead) VALUES (?, ?, ?, 'scheduled', 1)").run(leadEmp, addMinutes(now, -60), addMinutes(now, 120));
   const me = (await lead.get('/auth/me')).body.user;
-  assert.ok(me.lead_scope, 'lead scope exposed');
+  assert.ok(me.lead_scope);
   assert.ok(me.permissions.includes('attendance.manage'));
   const rows = (await lead.get(`/attendance?date=${today}`)).body.rows;
+  const leadLoc = db.prepare('SELECT location_id FROM employees WHERE id = ?').get(leadEmp).location_id;
   assert.ok(rows.every((r) => r.start_at < me.lead_scope.to && r.end_at > me.lead_scope.from), 'only the overlapping shift');
+  assert.ok(rows.every((r) => (r.location_id ?? db.prepare('SELECT location_id FROM employees WHERE id = ?').get(r.employee_id).location_id) === leadLoc), 'only their branch');
   const outside = db.prepare("SELECT id FROM shifts WHERE status = 'scheduled' AND (end_at <= ? OR start_at >= ?) LIMIT 1").get(me.lead_scope.from, me.lead_scope.to);
   assert.equal((await lead.put(`/attendance/${outside.id}`, { marked_absent: true })).status, 403);
   assert.equal((await lead.get('/employees')).status, 403, 'no other manager rights');

@@ -2,18 +2,21 @@ import { getDb } from '../db/index.js';
 import { computeAttendance } from '../lib/attendance.js';
 import { addDays, nowLocal } from '../lib/time.js';
 import { payrollSummaryByEmployee } from './payroll.js';
+import { scopeWhere } from './scope.js';
 
 /**
  * Build a workforce report from real shift + attendance data.
  * filters: { from, to, employee_id, department_id, position_id }
  */
-export function buildReport({ from, to, employee_id, department_id, position_id, location_id }, { includeCost }) {
+export function buildReport({ from, to, employee_id, department_id, position_id, location_id, scope }, { includeCost }) {
   const where = ["s.status = 'scheduled'", 's.start_at >= @from', 's.start_at < @to'];
   const p = { from: `${from}T00:00`, to: `${addDays(to, 1)}T00:00` };
   if (employee_id) { where.push('s.employee_id = @employee_id'); p.employee_id = employee_id; }
   if (department_id) { where.push('e.department_id = @department_id'); p.department_id = department_id; }
   if (position_id) { where.push('e.position_id = @position_id'); p.position_id = position_id; }
   if (location_id) { where.push('COALESCE(s.location_id, e.location_id) = @location_id'); p.location_id = location_id; }
+  const sw = scopeWhere(scope, { e: 'e', s: 's' });
+  if (sw) where.push(sw.replace(/^ AND /, ''));
   const now = nowLocal();
   const rows = getDb().prepare(
     `SELECT s.id, s.employee_id, s.start_at, s.end_at, a.clock_in_at, a.clock_out_at, a.marked_absent,
@@ -50,7 +53,7 @@ export function buildReport({ from, to, employee_id, department_id, position_id,
   }
 
   // Overtime and cost follow the pay rules (daily tiers, rest days and holidays) – see services/payroll.js
-  const pay = payrollSummaryByEmployee({ from, to: to < now.slice(0, 10) ? to : now.slice(0, 10), employee_id, department_id, location_id });
+  const pay = payrollSummaryByEmployee({ from, to: to < now.slice(0, 10) ? to : now.slice(0, 10), employee_id, department_id, location_id, scope });
   for (const e of byEmp.values()) {
     const pe = pay.get(e.employee_id);
     e.overtime_minutes = pe ? pe.overtime_minutes : 0;

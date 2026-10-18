@@ -53,7 +53,7 @@ export function useConflictSave() {
 }
 
 export default function ShiftForm({ open, onClose, shift, defaults = {}, onSaved }) {
-  const { meta } = useAuth();
+  const { meta, user } = useAuth();
   const toast = useToast();
   const isEdit = !!shift?.id;
   const [saving, setSaving] = useState(false);
@@ -65,7 +65,7 @@ export default function ShiftForm({ open, onClose, shift, defaults = {}, onSaved
     employee_id: String(shift.employee_id), employee_ids: [], position_id: shift.position_id ?? '', location_id: shift.location_id ?? '', note: shift.note ?? '',
   } : {
     date: defaults.date || '', start_time: '08:00', end_time: '16:00', employee_id: '', employee_ids: defaults.employee_ids || [],
-    position_id: '', location_id: meta.locations[0]?.id ?? '', note: '',
+    position_id: '', location_id: (user?.scope && !user.scope.all ? user.scope.branches?.[0]?.id : meta.locations[0]?.id) ?? '', note: '',
   });
 
   const activeEmployees = useMemo(() => meta.employees.filter((e) => e.status !== 'inactive'
@@ -144,7 +144,7 @@ export default function ShiftForm({ open, onClose, shift, defaults = {}, onSaved
             <Select value={v.position_id} onChange={set('position_id')}><option value="">לפי תפקיד העובד</option>{meta.positions.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}</Select>
           </Field>
           <Field label="מיקום">
-            <Select value={v.location_id} onChange={set('location_id')}><option value="">ללא</option>{meta.locations.filter((l) => l.is_active || l.id === Number(v.location_id)).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select>
+            <Select value={v.location_id} onChange={set('location_id')}><option value="">ללא</option>{(user?.scope && !user.scope.all && user.scope.branches?.length ? user.scope.branches : meta.locations.filter((l) => l.is_active || l.id === Number(v.location_id))).map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}</Select>
           </Field>
           <Field label="הערה" className="full" error={errors.note}><Textarea value={v.note} onChange={set('note')} maxLength={500} style={{ minHeight: 64 }} /></Field>
         </div>

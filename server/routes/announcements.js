@@ -14,20 +14,49 @@ const URGENCY_LABEL = { low: 'לידיעה', normal: 'רגילה', high: 'חשו
 
 /** Where the viewer belongs (branch / department) – used to target announcements. */
 function viewerScope(user) {
-  const emp = user.employee_id ? getDb().prepare('SELECT location_id, department_id FROM employees WHERE id = ?').get(user.employee_id) : null;
-  return { loc: emp?.location_id ?? user.location_id ?? null, dep: emp?.department_id ?? null };
+  const db = getDb();
+  const emp = user.employee_id ? db.prepare('SELECT location_id, department_id FROM employees WHERE id = ?').get(user.employee_id) : null;
+  const locs = [emp?.location_id ?? user.location_id];
+  if (user.employee_id) locs.push(...db.prepare('SELECT location_id FROM employee_locations WHERE employee_id = ?').all(user.employee_id).map((r) => r.location_id));
+  return { locs: JSON.stringify(locs.filter(Boolean)), dep: emp?.department_id ?? null };
 }
 
-const VISIBLE = `(a.location_id IS NULL OR a.location_id = @loc) AND (a.department_id IS NULL OR a.department_id = @dep)
+// an employee who works in several branches sees the announcements of all of them
+const VISIBLE = `(a.location_id IS NULL OR a.location_id IN (SELECT value FROM json_each(@locs))) AND (a.department_id IS NULL OR a.department_id = @dep)
   AND (a.expires_at IS NULL OR a.expires_at > @now)`;
+
+/** Announcements a manager may see in the management view / edit (by their responsibility scope). */
+function manageWhere(req) {
+  const sc = req.user.scope;
+  if (sc.all) return '';
+  const locs = sc.locs ? sc.locs.map(Number).join(',') || '-1' : null;
+  const inScope = [
+    locs ? `(a.location_id IS NULL OR a.location_id IN (${locs}))` : '1',
+    sc.dep ? `(a.department_id IS NULL OR a.department_id = ${Number(sc.dep)})` : '1',
+  ].join(' AND ');
+  return `AND (a.created_by = ${Number(req.user.id)} OR (${inScope}))`;
+}
+
+/** Posting: a branch / department manager can only address their own branch / department. */
+function fitToScope(req, d) {
+  const sc = req.user.scope;
+  if (sc.all) return;
+  if (sc.selfOnly || sc.window) throw forbidden('אין לך הרשאה לפרסם הודעות');
+  if (sc.locs) {
+    if (!d.location_id && sc.locs.length === 1) d.location_id = sc.locs[0];
+    if (!sc.locs.includes(Number(d.location_id))) throw badRequest('יש לבחור סניף שבאחריותך', { fields: { location_id: 'סניף מחוץ לאחריותך' } });
+  }
+  if (sc.dep) d.department_id = sc.dep;
+}
 
 /** Active users an announcement is meant for (its author excluded). */
 function audience(a) {
   return getDb().prepare(
     `SELECT u.id, u.display_name, e.id AS employee_id FROM users u LEFT JOIN employees e ON e.id = u.employee_id
      WHERE u.is_active = 1 AND u.id != @author
-       AND (@loc IS NULL OR COALESCE(e.location_id, u.location_id) = @loc)
-       AND (@dep IS NULL OR e.department_id = @dep)
+       AND (@loc IS NULL OR COALESCE(e.location_id, u.location_id) = @loc
+            OR EXISTS (SELECT 1 FROM employee_locations x WHERE x.employee_id = e.id AND x.location_id = @loc))
+       AND (@dep IS NULL OR COALESCE(e.department_id, u.department_id) = @dep)
      ORDER BY u.display_name`,
   ).all({ author: a.created_by ?? -1, loc: a.location_id, dep: a.department_id });
 }
@@ -45,8 +74,7 @@ router.get('/', (req, res) => {
   const p = { me: req.user.id, now: nowLocal(), ...viewerScope(req.user) };
   // Managers see everything from the last 90 days (incl. expired and other branches) with confirmation stats.
   const rows = manage
-    ? db.prepare(`${SELECT} WHERE a.created_at > datetime('now','-90 day') ${req.user.location_id ? 'AND (a.location_id IS NULL OR a.location_id = @myloc)' : ''} ${ORDER}`)
-      .all({ ...p, myloc: req.user.location_id ?? null })
+    ? db.prepare(`${SELECT} WHERE a.created_at > datetime('now','-90 day') ${manageWhere(req)} ${ORDER}`).all(p)
     : db.prepare(`${SELECT} WHERE ${VISIBLE} ${ORDER}`).all(p);
   const out = rows.map((a) => {
     const item = { ...a, requires_ack: !!a.requires_ack, expired: !!(a.expires_at && a.expires_at <= p.now), mine: a.created_by === req.user.id };
@@ -87,14 +115,16 @@ const schema = z.object({
 
 function canEdit(req, a) {
   if (!req.can('announcements.manage')) return false;
-  return !req.user.location_id || a.location_id === req.user.location_id || a.created_by === req.user.id;
+  const sc = req.user.scope;
+  if (sc.all || a.created_by === req.user.id) return true;
+  if (sc.selfOnly || sc.window) return false;
+  return (!sc.locs || sc.locs.includes(a.location_id)) && (!sc.dep || a.department_id === sc.dep);
 }
 
 router.post('/', ah((req, res) => {
   if (!req.can('announcements.manage')) throw forbidden();
   const d = validate(schema, req.body);
-  // a branch manager can only post to their own branch
-  if (req.user.location_id) d.location_id = req.user.location_id;
+  fitToScope(req, d);
   if (d.expires_on && d.expires_on <= nowLocal()) throw badRequest('תאריך התפוגה כבר עבר', { fields: { expires_on: 'תאריך בעבר' } });
   const db = getDb();
   const id = db.prepare(
@@ -122,7 +152,7 @@ router.put('/:id', ah((req, res) => {
   if (!before) throw notFound('ההודעה לא נמצאה');
   if (!canEdit(req, before)) throw forbidden();
   const d = validate(schema, req.body);
-  if (req.user.location_id) d.location_id = req.user.location_id;
+  fitToScope(req, d);
   db.prepare(`UPDATE announcements SET title=@title, body=@body, urgency=@urgency, requires_ack=@requires_ack, location_id=@location_id,
     department_id=@department_id, expires_at=@expires_on WHERE id=@id`).run({ ...d, requires_ack: d.requires_ack ? 1 : 0, id });
   audit(req, { action: 'announcement.update', entityType: 'announcement', entityId: id, description: `${req.user.display_name} עדכן/ה הודעה: ${d.title}`, oldValue: before, newValue: d });

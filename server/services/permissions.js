@@ -28,6 +28,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     'incidents.report', 'tasks.manage', 'announcements.manage',
   ],
   employee: [],
+  shift_lead: ['attendance.manage', 'incidents.report'],
 };
 
 const cache = new Map();

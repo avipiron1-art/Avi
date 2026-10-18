@@ -7,6 +7,7 @@ import { requireEmployee } from '../middleware/auth.js';
 import { nowLocal, hhmm } from '../lib/time.js';
 import { audit } from '../services/audit.js';
 import { notifyEmployee, notifyPermission } from '../services/notify.js';
+import { scopeWhere, shiftInScope } from '../services/scope.js';
 
 const router = Router();
 const canApprove = (req) => req.can('shifts.manage') || req.can('schedule.manage');
@@ -19,19 +20,21 @@ const SELECT = `
   FROM shift_swaps w JOIN shifts s ON s.id = w.shift_id
   JOIN employees eo ON eo.id = w.offered_by LEFT JOIN employees et ON et.id = w.taken_by
   LEFT JOIN locations l ON l.id = s.location_id LEFT JOIN shift_types st ON st.id = s.shift_type_id`;
+/** SQL: the given branch is one where employee ? works (home or extra branch); always true without branches. */
+const worksAt = (locExpr) => `(${locExpr} IS NULL OR NOT EXISTS (SELECT 1 FROM locations) OR ${locExpr} = (SELECT location_id FROM employees WHERE id = ?)
+  OR EXISTS (SELECT 1 FROM employee_locations x WHERE x.employee_id = ? AND x.location_id = ${locExpr}))`;
 const getSwap = (id) => getDb().prepare(`${SELECT} WHERE w.id = ?`).get(id);
 
 router.get('/', (req, res) => {
   const db = getDb();
   const now = nowLocal();
   const me = req.user.employee_id || -1;
-  const myLoc = db.prepare('SELECT location_id FROM employees WHERE id = ?').get(me)?.location_id ?? null;
-  // Open offers from colleagues (same branch when branches are used)
-  const open = db.prepare(`${SELECT} WHERE w.status = 'open' AND s.start_at > ? AND w.offered_by != ? AND (? IS NULL OR s.location_id IS NULL OR s.location_id = ?) ORDER BY s.start_at`)
-    .all(now, me, myLoc, myLoc);
+  // Open offers from colleagues in the branches I work in (when branches are used)
+  const open = db.prepare(`${SELECT} WHERE w.status = 'open' AND s.start_at > ? AND w.offered_by != ? AND ${worksAt('COALESCE(s.location_id, eo.location_id)')} ORDER BY s.start_at`)
+    .all(now, me, me, me);
   const mine = db.prepare(`${SELECT} WHERE (w.offered_by = ? OR w.taken_by = ?) AND (w.status IN ('open','taken') OR w.created_at > datetime('now','-30 day')) ORDER BY w.id DESC`).all(me, me);
   const pending = canApprove(req)
-    ? db.prepare(`${SELECT} WHERE w.status = 'taken' AND (? IS NULL OR s.location_id = ?) ORDER BY s.start_at`).all(req.user.location_id ?? null, req.user.location_id ?? null)
+    ? db.prepare(`${SELECT} WHERE w.status = 'taken' ${scopeWhere(req.user.scope, { e: 'eo', s: 's', includeSelf: false })} ORDER BY s.start_at`).all()
     : [];
   // my shifts that can still be offered
   const offerable = req.user.employee_id ? db.prepare(
@@ -54,7 +57,9 @@ router.post('/', requireEmployee, ah((req, res) => {
   const id = db.prepare('INSERT INTO shift_swaps (shift_id, offered_by, note) VALUES (?, ?, ?)').run(s.id, req.user.employee_id, d.note).lastInsertRowid;
   audit(req, { action: 'swap.offer', entityType: 'shift', entityId: s.id, description: `${req.user.display_name} הציע/ה להחלפה את המשמרת ${describe(s)}` });
   // let colleagues in the same branch know
-  const colleagues = db.prepare("SELECT id FROM employees WHERE status = 'active' AND id != ? AND (? IS NULL OR location_id IS NULL OR location_id = ?)").all(req.user.employee_id, s.location_id, s.location_id);
+  const loc = s.location_id ?? db.prepare('SELECT location_id FROM employees WHERE id = ?').get(s.employee_id)?.location_id ?? null;
+  const colleagues = db.prepare(`SELECT id FROM employees e WHERE status = 'active' AND id != ? AND (? IS NULL OR e.location_id IS NULL OR e.location_id = ?
+    OR EXISTS (SELECT 1 FROM employee_locations x WHERE x.employee_id = e.id AND x.location_id = ?))`).all(req.user.employee_id, loc, loc, loc);
   for (const c of colleagues) notifyEmployee(c.id, { type: 'swap_offer', title: 'משמרת פנויה להחלפה', body: `${req.user.display_name} · ${describe(s)}`, link: '/schedule?tab=swaps' });
   res.status(201).json({ swap: getSwap(id), message: 'המשמרת פורסמה בלוח ההחלפות' });
 }));
@@ -67,13 +72,16 @@ router.post('/:id/take', requireEmployee, ah((req, res) => {
   if (w.status !== 'open') throw badRequest('מישהו כבר לקח את המשמרת הזו');
   if (w.offered_by === req.user.employee_id) throw badRequest('זו המשמרת שלך');
   if (w.start_at <= nowLocal()) throw badRequest('המשמרת כבר התחילה');
+  const branchOk = db.prepare(`SELECT 1 FROM shifts s JOIN employees eo ON eo.id = s.employee_id WHERE s.id = ? AND ${worksAt('COALESCE(s.location_id, eo.location_id)')}`)
+    .get(w.shift_id, req.user.employee_id, req.user.employee_id);
+  if (!branchOk) throw badRequest('המשמרת בסניף שאינך עובד/ת בו');
   const clash = db.prepare("SELECT 1 FROM shifts WHERE employee_id = ? AND status = 'scheduled' AND start_at < ? AND end_at > ?").get(req.user.employee_id, w.end_at, w.start_at);
   if (clash) throw badRequest('יש לך משמרת אחרת בשעות האלה');
   const r = db.prepare("UPDATE shift_swaps SET status = 'taken', taken_by = ? WHERE id = ? AND status = 'open'").run(req.user.employee_id, id);
   if (!r.changes) throw badRequest('מישהו כבר לקח את המשמרת הזו');
   audit(req, { action: 'swap.take', entityType: 'shift', entityId: w.shift_id, description: `${req.user.display_name} ביקש/ה לקחת את המשמרת של ${w.offered_by_name} (${describe(w)})` });
   notifyEmployee(w.offered_by, { type: 'swap_taken', title: 'מישהו לקח את המשמרת שהצעת', body: `${req.user.display_name} · ${describe(w)} – ממתין לאישור מנהל`, link: '/schedule?tab=swaps' });
-  notifyPermission('schedule.manage', { type: 'swap_pending', title: 'החלפת משמרת ממתינה לאישור', body: `${w.offered_by_name} ← ${req.user.display_name} · ${describe(w)}`, link: '/schedule?tab=swaps' }, { exceptUserId: req.user.id });
+  notifyPermission('schedule.manage', { type: 'swap_pending', title: 'החלפת משמרת ממתינה לאישור', body: `${w.offered_by_name} ← ${req.user.display_name} · ${describe(w)}`, link: '/schedule?tab=swaps' }, { exceptUserId: req.user.id, about: { shiftId: w.shift_id } });
   res.json({ swap: getSwap(id), message: 'הבקשה נשלחה לאישור המנהל' });
 }));
 
@@ -99,7 +107,7 @@ router.post('/:id/decide', ah((req, res) => {
   const w = getSwap(id);
   if (!w) throw notFound('ההצעה לא נמצאה');
   if (w.status !== 'taken') throw badRequest('אין מה לאשר בשלב הזה');
-  if (req.user.location_id && w.location_id && w.location_id !== req.user.location_id) throw forbidden('המשמרת שייכת לסניף אחר');
+  if (!shiftInScope(req.user.scope, w.shift_id, { includeSelf: false })) throw forbidden('המשמרת לא באחריותך');
   const db = getDb();
   if (approve && db.prepare("SELECT 1 FROM shifts WHERE employee_id = ? AND status = 'scheduled' AND id != ? AND start_at < ? AND end_at > ?").get(w.taken_by, w.shift_id, w.end_at, w.start_at)) {
     throw badRequest(`ל${w.taken_by_name} כבר יש משמרת אחרת בשעות האלה`);

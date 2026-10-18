@@ -8,6 +8,7 @@ import { computeAttendance } from '../lib/attendance.js';
 import { addDays, nowLocal, hhmm, toMs, fromMs } from '../lib/time.js';
 import { audit } from '../services/audit.js';
 import { notifyEmployee } from '../services/notify.js';
+import { employeeInScope, locationInScope, scopeWhere, shiftInScope } from '../services/scope.js';
 
 const router = Router();
 
@@ -74,8 +75,9 @@ router.get('/', ah((req, res) => {
     where.push('s.employee_id = @own'); params.own = req.user.employee_id;
   } else {
     if (q.employee_id) { where.push('s.employee_id = @employee_id'); params.employee_id = q.employee_id; }
-    // branch manager: only their branch (plus their own shifts)
-    if (req.user.location_id) { where.push('(COALESCE(s.location_id, e.location_id) = @scope_loc OR s.employee_id = @self)'); params.scope_loc = req.user.location_id; params.self = req.user.employee_id || -1; }
+    // only shifts this manager is responsible for (plus their own)
+    const scope = scopeWhere(req.user.scope, { e: 'e', s: 's' });
+    if (scope) where.push(scope.replace(/^ AND /, ''));
   }
   if (q.department_id) { where.push('e.department_id = @department_id'); params.department_id = q.department_id; }
   if (q.location_id) { where.push('s.location_id = @location_id'); params.location_id = q.location_id; }
@@ -87,7 +89,7 @@ router.get('/', ah((req, res) => {
 router.get('/:id', ah((req, res) => {
   const s = getShift(paramId(req.params.id));
   if (!s) throw notFound('המשמרת לא נמצאה');
-  if (!req.can('shifts.view_all') && s.employee_id !== req.user.employee_id) throw forbidden();
+  if (s.employee_id !== req.user.employee_id && !(req.can('shifts.view_all') && shiftInScope(req.user.scope, s.id))) throw forbidden();
   res.json({ shift: withAttendance([s])[0] });
 }));
 
@@ -96,10 +98,27 @@ const baseShift = {
   position_id: zOptId, location_id: zOptId, note: zOptText(500), force: z.boolean().optional().default(false),
 };
 
+/** The manager may schedule these people, at this branch (a missing branch is filled from the scope). */
+function checkScope(req, employeeIds, data) {
+  const sc = req.user.scope;
+  if (sc.all) return;
+  if (sc.selfOnly) throw forbidden('אין לך הרשאה לשבץ משמרות');
+  for (const id of employeeIds) if (!employeeInScope(sc, id)) throw forbidden('אחד העובדים שנבחרו לא באחריותך');
+  if (sc.locs) {
+    if (!data.location_id) {
+      if (sc.locs.length > 1) throw badRequest('יש לבחור סניף למשמרת', { fields: { location_id: 'שדה חובה' } });
+      data.location_id = sc.locs[0];
+    }
+    if (!locationInScope(sc, data.location_id)) throw forbidden('הסניף שנבחר לא באחריותך');
+  }
+}
+const assertShiftInScope = (req, id) => { if (!shiftInScope(req.user.scope, id)) throw forbidden('המשמרת לא באחריותך'); };
+
 // ---------- create (one or many employees) ----------
 router.post('/', requirePerm('shifts.manage'), ah((req, res) => {
   const data = validate(z.object({ ...baseShift, employee_ids: z.array(zId).min(1, 'יש לבחור לפחות עובד אחד').max(100) }), req.body);
   const ids = [...new Set(data.employee_ids)];
+  checkScope(req, ids, data);
   const { start_at, end_at } = buildRange(data.date, data.start_time, data.end_time);
   const conflicts = ids.flatMap((id) => findConflicts(id, start_at, end_at));
   if (conflicts.length && !data.force) throw conflict('נמצאו התנגשויות בשיבוץ', { conflicts });
@@ -124,7 +143,9 @@ router.put('/:id', requirePerm('shifts.manage'), ah((req, res) => {
   const before = getShift(id);
   if (!before) throw notFound('המשמרת לא נמצאה');
   if (before.status === 'cancelled') throw badRequest('לא ניתן לערוך משמרת שבוטלה');
+  assertShiftInScope(req, id);
   const data = validate(z.object({ ...baseShift, employee_id: zId }), req.body);
+  checkScope(req, [data.employee_id], data);
   const { start_at, end_at } = buildRange(data.date, data.start_time, data.end_time);
   const conflicts = findConflicts(data.employee_id, start_at, end_at, id);
   if (conflicts.length && !data.force) throw conflict('נמצאו התנגשויות בשיבוץ', { conflicts });
@@ -158,6 +179,7 @@ router.delete('/:id', requirePerm('shifts.manage'), ah((req, res) => {
   const id = paramId(req.params.id);
   const s = getShift(id);
   if (!s) throw notFound('המשמרת לא נמצאה');
+  assertShiftInScope(req, id);
   if (s.clock_in_at) throw badRequest('לא ניתן לבטל משמרת שהעובד כבר החל בה');
   getDb().prepare("UPDATE shifts SET status='cancelled', updated_at=datetime('now') WHERE id=?").run(id);
   audit(req, { action: 'shift.cancel', entityType: 'shift', entityId: id, description: `${req.user.display_name} ביטל/ה את המשמרת של ${s.employee_name} (${describeShift(s)})`, oldValue: { status: 'scheduled' }, newValue: { status: 'cancelled' } });
@@ -170,8 +192,10 @@ router.post('/:id/duplicate', requirePerm('shifts.manage'), ah((req, res) => {
   const id = paramId(req.params.id);
   const src = getShift(id);
   if (!src) throw notFound('המשמרת לא נמצאה');
+  assertShiftInScope(req, id);
   const data = validate(z.object({ date: zDate, employee_id: zOptId, force: z.boolean().optional().default(false) }), req.body);
   const employeeId = data.employee_id || src.employee_id;
+  checkScope(req, [employeeId], { location_id: src.location_id || (req.user.scope.locs?.length === 1 ? req.user.scope.locs[0] : src.location_id) });
   const duration = toMs(src.end_at) - toMs(src.start_at);
   const start_at = `${data.date}T${hhmm(src.start_at)}`;
   const end_at = fromMs(toMs(start_at) + duration);
@@ -191,8 +215,10 @@ router.post('/copy-week', requirePerm('shifts.manage'), ah((req, res) => {
   const data = validate(z.object({ source_week_start: zDate, target_week_start: zDate }), req.body);
   if (data.source_week_start === data.target_week_start) throw badRequest('יש לבחור שבוע יעד שונה משבוע המקור');
   const db = getDb();
+  // only the shifts this manager is responsible for are copied
   const src = db.prepare(
-    "SELECT * FROM shifts WHERE status = 'scheduled' AND start_at >= ? AND start_at < ? ORDER BY start_at",
+    `SELECT s.* FROM shifts s JOIN employees e ON e.id = s.employee_id WHERE s.status = 'scheduled' AND s.start_at >= ? AND s.start_at < ?
+     ${scopeWhere(req.user.scope, { e: 'e', s: 's', includeSelf: false })} ORDER BY s.start_at`,
   ).all(`${data.source_week_start}T00:00`, `${addDays(data.source_week_start, 7)}T00:00`);
   if (!src.length) throw badRequest('אין משמרות בשבוע המקור');
   const offset = toMs(data.target_week_start) - toMs(data.source_week_start);

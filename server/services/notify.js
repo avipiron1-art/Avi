@@ -1,6 +1,7 @@
 import { getDb } from '../db/index.js';
 import { permissionsForUser } from './permissions.js';
 import { pushToUser } from './push.js';
+import { resolveScope, employeeInScope, shiftInScope, locationInScope } from './scope.js';
 import { queueNotificationEmail } from './mailer.js';
 
 // Notifications that are also worth an email (the rest stay in the app + phone push).
@@ -24,14 +25,28 @@ export function notifyEmployee(employeeId, payload) {
   if (u) notifyUser(u.id, payload);
 }
 
-/** Notify every active user that holds a given permission (role or personal grant). */
-export function notifyPermission(permission, payload, { exceptUserId = null } = {}) {
+/** Does a manager's scope cover what the notification is about? */
+function covers(scope, about) {
+  if (scope.type === 'lead' && !scope.active) return false;
+  if (!about || scope.all) return true;
+  if (about.shiftId) return shiftInScope(scope, about.shiftId, { includeSelf: false });
+  if (about.employeeId) return employeeInScope(scope, about.employeeId, { includeSelf: false });
+  if ('locationId' in about) return locationInScope(scope, about.locationId);
+  return true;
+}
+
+/**
+ * Notify every active user that holds a given permission (role or personal grant).
+ * `about` ({ employeeId } | { shiftId } | { locationId }) limits it to managers responsible for that person / shift / branch.
+ */
+export function notifyPermission(permission, payload, { exceptUserId = null, about = null } = {}) {
   const users = getDb()
-    .prepare('SELECT u.id, r.key AS role FROM users u JOIN roles r ON r.id = u.role_id WHERE u.is_active = 1')
+    .prepare('SELECT u.id, u.employee_id, r.key AS role FROM users u JOIN roles r ON r.id = u.role_id WHERE u.is_active = 1')
     .all();
   const stmt = ins();
   for (const u of users) {
     if (u.id === exceptUserId || !permissionsForUser(u.id, u.role).has(permission)) continue;
+    if (!covers(resolveScope(u), about)) continue;
     stmt.run(u.id, payload.type, payload.title, payload.body ?? null, payload.link ?? null);
     pushToUser(u.id, { title: payload.title, body: payload.body, link: payload.link, tag: payload.type, urgent: payload.urgent });
     if (wantsEmail(payload)) queueNotificationEmail(u.id, payload);

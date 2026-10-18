@@ -3,7 +3,8 @@ export const EMPLOYEE_COLUMNS = `
   e.id, e.employee_code, e.first_name, e.last_name, e.first_name || ' ' || e.last_name AS full_name,
   e.phone, e.email, e.avatar, e.position_id, p.name AS position_name, e.department_id,
   d.name AS department_name, d.color AS department_color, e.location_id, l.name AS location_name,
-  e.start_date, e.status, e.hourly_wage, e.can_lead, e.national_id, e.created_at, e.updated_at`;
+  e.start_date, e.status, e.hourly_wage, e.can_lead, e.national_id, e.created_at, e.updated_at,
+  (SELECT group_concat(x.location_id) FROM employee_locations x WHERE x.employee_id = e.id) AS extra_location_ids`;
 
 export const EMPLOYEE_JOINS = `
   LEFT JOIN positions p ON p.id = e.position_id
@@ -27,7 +28,8 @@ export const SHIFT_JOINS = `
 /** Remove wage information unless the viewer may see it. */
 export function scrubEmployee(emp, req) {
   if (!emp) return emp;
-  let out = emp;
+  let out = { ...emp };
+  if ('extra_location_ids' in out) out.extra_location_ids = out.extra_location_ids ? String(out.extra_location_ids).split(',').map(Number) : [];
   if (!req.can('employees.wage')) { const { hourly_wage, ...rest } = out; out = rest; }
   // ת"ז is visible only to employee managers and to the employee themself
   if (!req.can('employees.manage') && req.user.employee_id !== emp.id) { const { national_id, ...rest } = out; out = rest; }
