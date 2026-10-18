@@ -938,3 +938,23 @@ h2 { font-size: 1.12rem; font-weight: 700; letter-spacing: -.01em; }
   .emp-card { background: transparent; box-shadow: none; border-radius: 0; }
 }
 .bottom-nav .dot-badge { top: -2px; inset-inline-end: auto; inset-inline-start: calc(50% + 6px); }
+.header-bell, .sidebar-quick { display: none; }
+.clock-round.in:disabled { opacity: 1; cursor: default; background: var(--primary-soft); color: var(--primary-text); box-shadow: none; }
+@media (max-width: 900px) {
+  .topbar { display: none; }
+  .content { padding-top: calc(18px + env(safe-area-inset-top)); }
+  .header-bell { display: block; position: relative; }
+  .header-bell .icon-btn { width: 44px; height: 44px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+  .header-bell .popover { inset-inline-end: 0 !important; width: min(92vw, 360px) !important; }
+  .sidebar-quick { display: flex; flex-direction: column; margin-bottom: 6px; }
+  .sidebar-quick .menu-item { border-radius: 10px; font-weight: 600; }
+  .page-header .actions { align-items: center; }
+}
+@media (max-width: 640px) {
+  /* windows: gray sheet with white fields, like iOS forms */
+  .modal { background: var(--bg); }
+  .modal .input, .modal .select, .modal .textarea { background: var(--surface); }
+  .modal .input:focus, .modal .select:focus, .modal .textarea:focus { background: var(--surface); }
+  .modal-header h2 { flex: 1; text-align: center; }
+  .modal-footer { border-top: 0; }
+}

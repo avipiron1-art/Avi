@@ -64,6 +64,9 @@ export default function ClockWidget({ data, onChange }) {
     sub = where || 'המשמרת שלך היום';
     title = done ? `המשמרת הסתיימה ב־${time(active.clock_out_at)}` : 'עוד לא נכנסת למשמרת';
     text = done ? 'תודה! השעות נרשמו.' : 'לוחצים על "כניסה" כשמגיעים לעבודה.';
+  } else if (next) {
+    big = shiftRange(next);
+    sub = [longDate(next.start_at), next.position_name, next.location_name].filter(Boolean).join(' · ');
   } else {
     big = now.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' });
     sub = now.toLocaleDateString('he-IL', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -73,7 +76,7 @@ export default function ClockWidget({ data, onChange }) {
     <div className="card my-shift">
       <div className="my-shift-head">
         <span className="my-shift-label">המשמרת שלי</span>
-        {active && <StatusBadge map={ATTENDANCE_STATUS} value={active.attendance_status} />}
+        {active ? <StatusBadge map={ATTENDANCE_STATUS} value={active.attendance_status} /> : next && <span className="badge tone-primary">המשמרת הבאה</span>}
       </div>
       <div>
         <div className="my-shift-big">{big}</div>
@@ -97,12 +100,22 @@ export default function ClockWidget({ data, onChange }) {
             {!onShift && !done && active.location_name && <span className="my-shift-ok"><MapPin size={15} />{active.location_name}</span>}
           </div>
         </div>
+      ) : next ? (
+        <div className="my-shift-row">
+          <button type="button" className="clock-round in" disabled aria-describedby="clock-wait">
+            <LogIn size={28} />
+            <span>כניסה</span>
+          </button>
+          <div className="my-shift-text">
+            <strong>עוד לא נכנסת למשמרת</strong>
+            <span className="muted" id="clock-wait">הכניסה נפתחת שעה לפני תחילת המשמרת</span>
+            {next.location_name && <span className="my-shift-ok"><MapPin size={15} />{next.location_name}</span>}
+          </div>
+        </div>
       ) : (
         <div className="my-shift-text">
-          <strong>אין משמרת פעילה כרגע</strong>
-          {next ? (
-            <span className="muted flex" style={{ gap: 6 }}><CalendarClock size={15} />המשמרת הבאה: {longDate(next.start_at)} · <span className="ltr">{shiftRange(next)}</span></span>
-          ) : <span className="muted">כשתשובץ/י למשמרת היא תופיע כאן.</span>}
+          <strong>אין משמרת קרובה</strong>
+          <span className="muted flex" style={{ gap: 6 }}><CalendarClock size={15} />כשתשובץ/י למשמרת היא תופיע כאן.</span>
         </div>
       )}
     </div>

@@ -89,7 +89,7 @@ export default function Employees() {
       <PageHeader title="עובדים" subtitle={data ? `${employees.length} עובדים${hasFilters ? ' (מסונן)' : ''}` : 'ניהול כוח האדם בעסק'}
         actions={(
           <>
-            <Button icon={Download} onClick={exportCsv} disabled={!employees.length}><span className="btn-label">ייצוא</span></Button>
+            <Button icon={Download} onClick={exportCsv} disabled={!employees.length} className="hide-sm" aria-label="ייצוא"><span className="btn-label">ייצוא</span></Button>
             {canManage && <Button icon={Link2} onClick={() => setInviting(true)}><span className="btn-label">הזמנה בקישור</span></Button>}
             {canManage && <Button variant="primary" icon={Plus} onClick={() => setForm({})} aria-label="הוספת עובד"><span className="btn-label">הוספת עובד</span></Button>}
           </>

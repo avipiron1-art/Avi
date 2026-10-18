@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useContext, useEffect, useRef, useState } from 'react';
 import { X, AlertTriangle, Inbox, Loader2, RefreshCw, ChevronUp, ChevronDown } from 'lucide-react';
+import { HeaderSlot } from '../lib/headerSlot.js';
 
 // ---------- Button ----------
 export function Button({ variant = 'default', size, loading, icon: Icon, children, className = '', block, ...rest }) {
@@ -85,6 +86,7 @@ export function KpiCard({ label, value, icon: Icon, tone = 'primary', hint, to, 
 }
 
 export function PageHeader({ title, subtitle, actions, eyebrow }) {
+  const bell = useContext(HeaderSlot);
   return (
     <div className="page-header">
       <div>
@@ -92,7 +94,7 @@ export function PageHeader({ title, subtitle, actions, eyebrow }) {
         <h1>{title}</h1>
         {subtitle && <p className="muted" style={{ marginTop: 4 }}>{subtitle}</p>}
       </div>
-      {actions && <div className="actions">{actions}</div>}
+      {(actions || bell) && <div className="actions">{actions}{bell && <div className="header-bell">{bell}</div>}</div>}
     </div>
   );
 }

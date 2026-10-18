@@ -13,6 +13,7 @@ import NotificationBell from './NotificationBell.jsx';
 import { InstallBanner, InstallButton } from './InstallApp.jsx';
 import { BrandLogo } from '../lib/branding.jsx';
 import AckGate from './AckGate.jsx';
+import { HeaderSlot } from '../lib/headerSlot.js';
 
 /** Navigation items; `perm` = any of these permissions, `employee` = needs an employee card. */
 export const NAV = [
@@ -102,6 +103,11 @@ export default function Layout() {
           ))}
         </nav>
         <div className="sidebar-footer">
+          <div className="sidebar-quick">
+            <button type="button" className="menu-item" onClick={() => { setMenuOpen(false); setSearchOpen(true); }}><Search size={17} />חיפוש</button>
+            <button type="button" className="menu-item" onClick={toggleTheme}>{theme === 'dark' ? <Sun size={17} /> : <Moon size={17} />}{theme === 'dark' ? 'מצב בהיר' : 'מצב כהה'}</button>
+            <Link className="menu-item" to="/settings?tab=profile"><KeyRound size={17} />הפרופיל שלי</Link>
+          </div>
           <div className="sidebar-install"><InstallButton block variant="ghost" /></div>
           <div className="person" style={{ padding: 6 }}>
             <Avatar name={user.display_name} size={34} />
@@ -156,7 +162,9 @@ export default function Layout() {
               <span>{user.scope.missing === 'department' ? 'לא הוגדרה לך מחלקה' : 'לא הוגדר לך סניף'}, ולכן אינך רואה עובדים ולא יכול/ה לבנות סידור. פנו למנהל הראשי כדי שיגדיר את זה בהגדרות ← משתמשים.</span>
             </div>
           )}
-          <Outlet />
+          <HeaderSlot.Provider value={<NotificationBell unread={unread} setUnread={setUnread} />}>
+            <Outlet />
+          </HeaderSlot.Provider>
           <AckGate />
         </main>
       </div>

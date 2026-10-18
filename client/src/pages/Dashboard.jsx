@@ -197,7 +197,6 @@ function EmployeeDashboard({ data, reload }) {
     <>
       <PageHeader eyebrow={longDate(data.now)} title={`${greeting()}, ${user.display_name.split(' ')[0]}`} actions={c.button} />
       {c.modal}
-      <PushToggle compact />
       {(c.show('clock') || c.show('kpis')) && <div className={`grid ${c.show('clock') && c.show('kpis') ? 'grid-2' : ''}`} style={{ marginBottom: 16 }}>
         {c.show('clock') && <ClockWidget data={clock} onChange={() => { loadClock(); reload({ silent: true }); }} />}
         {c.show('kpis') && <div className="kpis" style={{ margin: 0, gridTemplateColumns: 'repeat(2, minmax(0,1fr))' }}>
@@ -207,6 +206,7 @@ function EmployeeDashboard({ data, reload }) {
           <KpiCard label="בקשות ממתינות" value={kpis.pending_requests} icon={Inbox} tone="info" />
         </div>}
       </div>}
+      <PushToggle compact />
       <div className="grid grid-2">
         {c.show('upcoming') && <Card title="המשמרות הקרובות שלי" icon={CalendarClock} pad={false} actions={<Link to="/shifts" className="btn btn-ghost btn-sm">ללוח</Link>}>
           {upcoming.length ? (
