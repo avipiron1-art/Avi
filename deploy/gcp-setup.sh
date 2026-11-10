@@ -30,6 +30,9 @@ if ! swapon --show | grep -q .; then
   fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile
   grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
 fi
+# Keep the app in memory: use swap only when RAM is really full (a swapped-out app opens slowly after a quiet hour)
+echo 'vm.swappiness=10' > /etc/sysctl.d/90-shiftly.conf
+sysctl -q -w vm.swappiness=10 || true
 
 # ---------- packages ----------
 say "Installing system packages"
@@ -123,7 +126,7 @@ EOF
 
 cat > /etc/caddy/Caddyfile <<EOF
 $DOMAIN {
-  encode gzip
+  encode zstd gzip
   reverse_proxy 127.0.0.1:3000
 }
 EOF

@@ -10,7 +10,7 @@ import { useToast } from '../lib/toast.jsx';
 import {
   Avatar, Badge, Button, Card, EmptyState, ErrorState, SkeletonPage, StatusBadge, Tabs, Textarea,
 } from '../components/ui.jsx';
-import { HoursBar } from '../components/Charts.jsx';
+import { HoursBar } from '../components/LazyCharts.jsx';
 import EmployeeForm from '../components/EmployeeForm.jsx';
 import {
   ATTENDANCE_STATUS, EMPLOYEE_STATUS, PRIORITY, REQUEST_STATUS, REQUEST_TYPE, TASK_STATUS, dateTime, dayName, fullDate,

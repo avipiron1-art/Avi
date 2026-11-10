@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { Suspense, useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate, Link } from 'react-router';
 import {
   Users, CalendarDays, Clock, ListTodo, Inbox, BarChart3, Bell, Settings, Menu, Search, Moon, Sun,
@@ -7,7 +7,7 @@ import {
 import { useAuth } from '../lib/auth.jsx';
 import { useTheme } from '../lib/theme.js';
 import { api } from '../lib/api.js';
-import { Avatar, IconButton } from './ui.jsx';
+import { Avatar, IconButton, SkeletonPage } from './ui.jsx';
 import GlobalSearch from './GlobalSearch.jsx';
 import NotificationBell from './NotificationBell.jsx';
 import { InstallBanner, InstallButton } from './InstallApp.jsx';
@@ -163,7 +163,7 @@ export default function Layout() {
             </div>
           )}
           <HeaderSlot.Provider value={<NotificationBell unread={unread} setUnread={setUnread} />}>
-            <Outlet />
+            <Suspense fallback={<SkeletonPage />}><Outlet /></Suspense>
           </HeaderSlot.Provider>
           <AckGate />
         </main>

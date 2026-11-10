@@ -62,3 +62,15 @@ export async function download(path, query, filename) {
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
+
+// ---------- saved copies of a few screens (shown instantly on the next open, then refreshed) ----------
+const CACHE_PREFIX = 'api-cache:';
+export function readApiCache(key) {
+  try { return JSON.parse(localStorage.getItem(CACHE_PREFIX + key) || 'null'); } catch { return null; }
+}
+export function writeApiCache(key, data) {
+  try { localStorage.setItem(CACHE_PREFIX + key, JSON.stringify(data)); } catch { /* storage full or unavailable */ }
+}
+export function clearApiCache() {
+  try { Object.keys(localStorage).filter((k) => k.startsWith(CACHE_PREFIX)).forEach((k) => localStorage.removeItem(k)); } catch { /* storage unavailable */ }
+}

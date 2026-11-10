@@ -8,7 +8,7 @@ import { useToast } from '../lib/toast.jsx';
 import {
   Button, Card, EmptyState, ErrorState, Field, Input, KpiCard, PageHeader, Segmented, Select, SkeletonPage, SortHeader,
 } from '../components/ui.jsx';
-import { HoursBar } from '../components/Charts.jsx';
+import { HoursBar } from '../components/LazyCharts.jsx';
 import { addDays, addMonths, dayName, endOfMonth, fullDate, localToday, money, shortDate, startOfMonth, startOfWeek } from '../lib/format.js';
 
 const PRESETS = {

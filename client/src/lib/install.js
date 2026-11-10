@@ -36,4 +36,16 @@ export function useInstall() {
 export function registerServiceWorker() {
   if (!('serviceWorker' in navigator) || !import.meta.env.PROD) return;
   window.addEventListener('load', () => { navigator.serviceWorker.register('/sw.js').catch(() => {}); });
+  // The app opened from the copy saved on the phone and a newer version just arrived:
+  // switch right away if it's the first seconds, otherwise the next time the app comes back to the screen.
+  const openedAt = Date.now();
+  navigator.serviceWorker.addEventListener('message', (e) => {
+    if (e.data?.type !== 'update-ready') return;
+    if (Date.now() - openedAt < 8000) { window.location.reload(); return; }
+    let hiddenAt = 0;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') hiddenAt = Date.now();
+      else if (hiddenAt && Date.now() - hiddenAt > 60000) window.location.reload(); // away for a while: nothing half-typed is lost
+    });
+  });
 }

@@ -5,6 +5,8 @@ import App from './App.jsx';
 import { AuthProvider } from './lib/auth.jsx';
 import { ToastProvider } from './lib/toast.jsx';
 import { BrandingProvider } from './lib/branding.jsx';
+// The font ships with the app (no extra trip to Google before text shows)
+import '@fontsource-variable/assistant';
 import './styles.css';
 import { registerServiceWorker } from './lib/install.js';
 
