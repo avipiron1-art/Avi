@@ -5,14 +5,14 @@ import {
   CalendarPlus, CheckCircle2, XCircle, PencilLine, AlertTriangle, UserPlus, Coffee, SlidersHorizontal,
 } from 'lucide-react';
 import { useApi } from '../lib/hooks.js';
-import { api } from '../lib/api.js';
+import { api, readApiCache, writeApiCache } from '../lib/api.js';
 import { useAuth } from '../lib/auth.jsx';
 import {
   Button, Card, KpiCard, Modal, PageHeader, Person, Select, StatusBadge, EmptyState, ErrorState, SkeletonPage, Badge, Field, Ring,
 } from '../components/ui.jsx';
 import { NAV } from '../components/Layout.jsx';
 import { useToast } from '../lib/toast.jsx';
-import { HoursBar, HoursArea, StackedBar } from '../components/Charts.jsx';
+import { HoursBar, HoursArea, StackedBar } from '../components/LazyCharts.jsx';
 import ClockWidget from '../components/ClockWidget.jsx';
 import PushToggle from '../components/PushToggle.jsx';
 import {
@@ -235,8 +235,8 @@ function ManagerDashboard({ data }) {
 function EmployeeDashboard({ data, reload }) {
   const { user } = useAuth();
   const c = useCustomize('employee');
-  const [clock, setClock] = useState(null);
-  const loadClock = () => api.get('/attendance/me').then(setClock).catch(() => {});
+  const [clock, setClock] = useState(() => readApiCache('clock'));
+  const loadClock = () => api.get('/attendance/me').then((c) => { writeApiCache('clock', c); setClock(c); }).catch(() => {});
   useEffect(() => { loadClock(); }, []);
   const { kpis, upcoming, tasks, charts } = data;
   return (
@@ -314,9 +314,9 @@ export default function Dashboard() {
     try { first = !sessionStorage.getItem('started'); sessionStorage.setItem('started', '1'); } catch { /* storage unavailable */ }
     if (first && start && start !== '/') navigate(start, { replace: true });
   }, [start, navigate]);
-  const { data, loading, error, reload } = useApi('/dashboard');
+  const { data, loading, error, reload } = useApi('/dashboard', undefined, [], { cache: true });
   if (loading && !data) return <SkeletonPage />;
-  if (error) return <div className="card"><ErrorState error={error} onRetry={reload} /></div>;
+  if (error && !data) return <div className="card"><ErrorState error={error} onRetry={reload} /></div>;
   if (data.kind === 'manager') return <ManagerDashboard data={data} />;
   if (data.kind === 'employee') return <EmployeeDashboard data={data} reload={reload} />;
   return <div className="card"><EmptyState title="ברוכים הבאים" text="המשתמש שלך אינו משויך לכרטיס עובד. פנו למנהל המערכת." /></div>;

@@ -1,17 +1,24 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { api } from './api.js';
+import { api, readApiCache, writeApiCache } from './api.js';
 
-/** Load data from the API; re-runs when deps change. Returns { data, error, loading, reload, setData }. */
-export function useApi(path, query, deps = []) {
-  const [state, setState] = useState({ data: null, error: null, loading: true });
-  const seq = useRef(0);
+/**
+ * Load data from the API; re-runs when deps change. Returns { data, error, loading, reload, setData }.
+ * `cache: true` shows the copy saved on the phone right away, then refreshes it.
+ */
+export function useApi(path, query, deps = [], { cache = false } = {}) {
   const key = JSON.stringify([path, query]);
+  const [state, setState] = useState(() => {
+    const saved = cache && path ? readApiCache(key) : null;
+    return { data: saved, error: null, loading: !saved };
+  });
+  const seq = useRef(0);
   const load = useCallback(async ({ silent } = {}) => {
     if (!path) return;
     const id = ++seq.current;
     if (!silent) setState((s) => ({ ...s, loading: true, error: null }));
     try {
       const data = await api.get(path, query);
+      if (cache) writeApiCache(key, data);
       if (id === seq.current) setState({ data, error: null, loading: false });
     } catch (error) {
       if (id === seq.current) setState((s) => ({ ...s, error, loading: false }));
